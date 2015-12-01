@@ -733,14 +733,20 @@ func (fs *FileServer) Start() error {
 			go fs.stat(mx)
 		case *qp.WriteStatRequest:
 			go fs.writeStat(mx)
-
-			/*// 9P2000.e
-			case *qp.SessionRequestDote:
-				go fs.session(mx)
-			case *qp.SimpleReadRequestDote:
-				go fs.simpleRead(mx)
-			case *qp.SimpleWriteRequestDote:
-				go fs.simpleWrite(mx)*/
+		case *qp.SessionRequestDote:
+			/* 9P2000.e */
+		case *qp.SimpleReadRequestDote:
+			/* 9P2000.e */
+		case *qp.SimpleWriteRequestDote:
+			/* 9P2000.e */
+		case *qp.AuthRequestDotu:
+			/* 9P2000.u */
+		case *qp.AttachRequestDotu:
+			/* 9P2000.u */
+		case *qp.CreateRequestDotu:
+			/* 9P2000.u */
+		case *qp.WriteStatRequestDotu:
+			/* 9P2000.u */
 		}
 	}
 
