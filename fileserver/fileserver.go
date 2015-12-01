@@ -83,10 +83,10 @@ func (fs *FileServer) cleanup() {
 func (fs *FileServer) logreq(m qp.Message) {
 	switch fs.Verbosity {
 	case Chatty, Loud:
-		t := m.GetTag()
+		t := m.(qp.Tagger).GetTag()
 		log.Printf("-> [%04X]%T", t, m)
 	case Obnoxious, Debug:
-		t := m.GetTag()
+		t := m.(qp.Tagger).GetTag()
 		log.Printf("-> [%04X]%T    \t%+v", t, m, m)
 	}
 }
@@ -94,10 +94,10 @@ func (fs *FileServer) logreq(m qp.Message) {
 func (fs *FileServer) logresp(m qp.Message) {
 	switch fs.Verbosity {
 	case Loud:
-		t := m.GetTag()
+		t := m.(qp.Tagger).GetTag()
 		log.Printf("<- [%04X]%T", t, m)
 	case Obnoxious, Debug:
-		t := m.GetTag()
+		t := m.(qp.Tagger).GetTag()
 		log.Printf("<- [%04X]%T    \t%+v", t, m, m)
 	}
 }
@@ -107,20 +107,19 @@ func (fs *FileServer) sendError(t qp.Tag, str string) {
 		Tag:   t,
 		Error: str,
 	}
-	fs.respond(e)
+	fs.respond(t, e)
 }
 
-func (fs *FileServer) respond(m qp.Message) {
-	t := m.GetTag()
-	if t != qp.NOTAG {
-		fs.tagLock.Lock()
-		_, tagPresent := fs.tags[t]
-		fs.tagLock.Unlock()
+func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
+	fs.tagLock.Lock()
+	defer fs.tagLock.Unlock()
+	_, tagPresent := fs.tags[t]
 
-		if !tagPresent {
-			return
-		}
+	if t != qp.NOTAG && !tagPresent {
+		return
 	}
+
+	delete(fs.tags, t)
 
 	l := uint32(m.EncodedLength())
 	if l > fs.maxsize {
@@ -128,8 +127,10 @@ func (fs *FileServer) respond(m qp.Message) {
 			diff := l - fs.maxsize
 			mx.Error = mx.Error[:uint32(len(mx.Error))-diff]
 		} else {
-			fs.sendError(m.GetTag(), ResponseTooLong)
-			return
+			m = &qp.ErrorResponse{
+				Tag:   t,
+				Error: ResponseTooLong,
+			}
 		}
 	}
 
@@ -159,6 +160,7 @@ func (fs *FileServer) addTag(t qp.Tag) error {
 }
 
 func (fs *FileServer) version(r *qp.VersionRequest) {
+	fs.addTag(r.Tag)
 	maxsize := r.MaxSize
 	if maxsize > 1024*1024 {
 		maxsize = 1024 * 1024
@@ -185,7 +187,7 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 	fs.fids = make(map[qp.Fid]*fidState)
 	fs.tags = make(map[qp.Tag]bool)
 
-	fs.respond(&qp.VersionResponse{
+	fs.respond(r.Tag, &qp.VersionResponse{
 		Tag:     r.Tag,
 		MaxSize: maxsize,
 		Version: versionstr,
@@ -193,10 +195,12 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 }
 
 func (fs *FileServer) auth(r *qp.AuthRequest) {
+	fs.addTag(r.Tag)
 	fs.sendError(r.Tag, AuthNotSupported)
 }
 
 func (fs *FileServer) attach(r *qp.AttachRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 
@@ -230,19 +234,20 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 		return
 	}
 
-	fs.respond(&qp.AttachResponse{
+	fs.respond(r.Tag, &qp.AttachResponse{
 		Tag: r.Tag,
 		Qid: qid,
 	})
 }
 
 func (fs *FileServer) flush(r *qp.FlushRequest) {
+	fs.addTag(r.Tag)
 	fs.tagLock.Lock()
 	if _, exists := fs.tags[r.OldTag]; exists {
 		delete(fs.tags, r.OldTag)
 	}
 	fs.tagLock.Unlock()
-	fs.respond(&qp.FlushResponse{
+	fs.respond(r.Tag, &qp.FlushResponse{
 		Tag: r.Tag,
 	})
 }
@@ -345,6 +350,7 @@ done:
 }
 
 func (fs *FileServer) walk(r *qp.WalkRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 	state, exists := fs.fids[r.Fid]
@@ -368,13 +374,14 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 		fs.fids[r.NewFid] = newfidState
 	}
 
-	fs.respond(&qp.WalkResponse{
+	fs.respond(r.Tag, &qp.WalkResponse{
 		Tag:  r.Tag,
 		Qids: qids,
 	})
 }
 
 func (fs *FileServer) open(r *qp.OpenRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -407,13 +414,14 @@ func (fs *FileServer) open(r *qp.OpenRequest) {
 
 	state.open = openfile
 	state.mode = r.Mode
-	fs.respond(&qp.OpenResponse{
+	fs.respond(r.Tag, &qp.OpenResponse{
 		Tag: r.Tag,
 		Qid: qid,
 	})
 }
 
 func (fs *FileServer) create(r *qp.CreateRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -471,7 +479,7 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 	state.open = x
 	state.mode = r.Mode
 
-	fs.respond(&qp.CreateResponse{
+	fs.respond(r.Tag, &qp.CreateResponse{
 		Tag:    r.Tag,
 		Qid:    qid,
 		IOUnit: 0,
@@ -479,6 +487,7 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 }
 
 func (fs *FileServer) read(r *qp.ReadRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -519,13 +528,14 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 
 	b = b[:n]
 
-	fs.respond(&qp.ReadResponse{
+	fs.respond(r.Tag, &qp.ReadResponse{
 		Tag:  r.Tag,
 		Data: b,
 	})
 }
 
 func (fs *FileServer) write(r *qp.WriteRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -555,13 +565,14 @@ func (fs *FileServer) write(r *qp.WriteRequest) {
 		return
 	}
 
-	fs.respond(&qp.WriteResponse{
+	fs.respond(r.Tag, &qp.WriteResponse{
 		Tag:   r.Tag,
 		Count: uint32(n),
 	})
 }
 
 func (fs *FileServer) clunk(r *qp.ClunkRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 
@@ -581,12 +592,13 @@ func (fs *FileServer) clunk(r *qp.ClunkRequest) {
 		state.open = nil
 	}
 
-	fs.respond(&qp.ClunkResponse{
+	fs.respond(r.Tag, &qp.ClunkResponse{
 		Tag: r.Tag,
 	})
 }
 
 func (fs *FileServer) remove(r *qp.RemoveRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 
@@ -607,7 +619,7 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 	}
 
 	if len(state.location) <= 1 {
-		fs.respond(&qp.RemoveResponse{
+		fs.respond(r.Tag, &qp.RemoveResponse{
 			Tag: r.Tag,
 		})
 		return
@@ -623,12 +635,13 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 
 	p.(Dir).Remove(state.username, n)
 
-	fs.respond(&qp.RemoveResponse{
+	fs.respond(r.Tag, &qp.RemoveResponse{
 		Tag: r.Tag,
 	})
 }
 
 func (fs *FileServer) stat(r *qp.StatRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -653,13 +666,14 @@ func (fs *FileServer) stat(r *qp.StatRequest) {
 		return
 	}
 
-	fs.respond(&qp.StatResponse{
+	fs.respond(r.Tag, &qp.StatResponse{
 		Tag:  r.Tag,
 		Stat: st,
 	})
 }
 
 func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
+	fs.addTag(r.Tag)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -688,7 +702,7 @@ func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 		return
 	}
 
-	fs.respond(&qp.WriteStatResponse{
+	fs.respond(r.Tag, &qp.WriteStatResponse{
 		Tag: r.Tag,
 	})
 }
@@ -702,7 +716,7 @@ func (fs *FileServer) Start() error {
 			break
 		}
 
-		fs.addTag(m.GetTag())
+		fs.addTag(m.(qp.Tagger).GetTag())
 		fs.logreq(m)
 
 		switch mx := m.(type) {

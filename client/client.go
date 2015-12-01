@@ -21,13 +21,18 @@ var (
 	// for the request.
 	ErrInvalidResponse = errors.New("invalid response")
 
+	// ErrTagPoolDepleted indicates that all possible tags are currently in
+	// use.
 	ErrTagPoolDepleted = errors.New("tag pool depleted")
+
+	// ErrStopped indicate that the client was stopped.
+	ErrStopped = errors.New("stopped")
 )
 
 type Client struct {
-	rw io.ReadWriter
-
-	p         qp.Protocol
+	RW        io.ReadWriter
+	Proto     qp.Protocol
+	dead      error
 	queueLock sync.RWMutex
 	queue     map[qp.Tag]chan qp.Message
 	writeLock sync.RWMutex
@@ -47,34 +52,47 @@ func (c *Client) getChannel(t qp.Tag) (chan qp.Message, error) {
 	return ch, nil
 }
 
+func (c *Client) killChannel(t qp.Tag) error {
+	c.queueLock.Lock()
+	defer c.queueLock.Unlock()
+	ch, exists := c.queue[t]
+	if !exists {
+		return ErrNoSuchTag
+	}
+	ch <- nil
+	close(ch)
+	delete(c.queue, t)
+	return nil
+}
+
 func (c *Client) write(t qp.Tag, m qp.Message) error {
 	c.writeLock.Lock()
 	defer c.writeLock.Unlock()
-
-	if err := c.p.Encode(c.rw, m); err != nil {
-		if _, ok := c.queue[t]; ok {
-			delete(c.queue, t)
-		}
-		return err
-	}
-	return nil
+	return c.Proto.Encode(c.RW, m)
 }
 
 func (c *Client) received(m qp.Message) error {
 	c.queueLock.Lock()
 	defer c.queueLock.Unlock()
-	t := m.GetTag()
+	t := m.(qp.Tagger).GetTag()
 	if ch, ok := c.queue[t]; ok {
 		ch <- m
+		close(ch)
 		delete(c.queue, t)
 		return nil
 	}
 	return ErrNoSuchTag
 }
 
-func (c *Client) Tag() qp.Tag {
+// Tag retrieves the next valid tag.
+func (c *Client) Tag() (qp.Tag, error) {
 	c.queueLock.RLock()
 	defer c.queueLock.RUnlock()
+
+	// No need to loop 0xFFFF times to figure out that the thing is full.
+	if len(c.queue) == 0x10000 {
+		return 0, ErrTagPoolDepleted
+	}
 
 	exists := true
 	var t qp.Tag
@@ -88,49 +106,59 @@ func (c *Client) Tag() qp.Tag {
 		_, exists = c.queue[t]
 	}
 
+	// We can fail this check if the only valid tag was qp.NOTAG.
 	if !exists {
-		return nil, ErrTagPoolDepleted
+		return 0, ErrTagPoolDepleted
 	}
 
-	return t
+	return t, nil
 }
 
+// Send sends a message and retrieves the response.
 func (c *Client) Send(m qp.Message) (qp.Message, error) {
-	t := m.GetTag()
+	t := m.(qp.Tagger).GetTag()
 	ch, err := c.getChannel(t)
 	if err != nil {
+		c.killChannel(t)
 		return nil, err
 	}
 
-	c.write(t, m)
-	resp := <-ch
-	if resp == nil {
-		return nil, nil
+	err = c.write(t, m)
+	if err != nil {
+		c.dead = err
+		return nil, err
 	}
 
-	return resp, nil
+	return <-ch, nil
 }
 
+// Ditch throws a pending request state away.
 func (c *Client) Ditch(t qp.Tag) error {
-	c.queueLock.Lock()
-	defer c.queueLock.Unlock()
-	if _, exists := c.queue[t]; !exists {
-		return nil, ErrNoSuchTag
-	}
-	delete(c.queue, t)
-	return nil
+	return c.killChannel(t)
 }
 
-func (c *Client) SetCodec(p qp.Protocol) {
-	c.p = p
-}
-
+// Start starts the response parsing loop.
 func (c *Client) Start() error {
-	for {
-		m, err := c.p.Decode(c.rw)
+	for c.dead == nil {
+		m, err := c.Proto.Decode(c.RW)
 		if err != nil {
+			c.dead = err
 			return err
 		}
 		c.received(m)
+	}
+	return c.dead
+}
+
+func (c *Client) Stop() {
+	c.dead = ErrStopped
+}
+
+// New creates a new client.
+func New(rw io.ReadWriter) *Client {
+	return &Client{
+		RW:    rw,
+		Proto: qp.NineP2000,
+		queue: make(map[qp.Tag]chan qp.Message),
 	}
 }
