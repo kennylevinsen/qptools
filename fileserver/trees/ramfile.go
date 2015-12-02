@@ -92,9 +92,12 @@ func (of *RAMOpenFile) Close() error {
 	return nil
 }
 
+// RAMFile represents an in-memory file. It is usually created by calling
+// Create on a RAMTree. Like RAMTree, it contains basic permission checking at
+// owner and global, but not group level due to not having a group database.
+// Access and modified time is kept track of as well.
 type RAMFile struct {
 	sync.RWMutex
-	parent      Dir
 	content     []byte
 	id          uint64
 	name        string
@@ -106,15 +109,6 @@ type RAMFile struct {
 	version     uint32
 	permissions qp.FileMode
 	opens       uint
-}
-
-func (f *RAMFile) SetParent(d Dir) error {
-	f.parent = d
-	return nil
-}
-
-func (f *RAMFile) Parent() (Dir, error) {
-	return f.parent, nil
 }
 
 func (f *RAMFile) Name() (string, error) {

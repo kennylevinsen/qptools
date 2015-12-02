@@ -30,6 +30,20 @@ func toError(m qp.Message) error {
 	return nil
 }
 
+func emptyStat() qp.Stat {
+	return qp.Stat{
+		Type:   ^uint16(0),
+		Dev:    ^uint32(0),
+		Mode:   ^qp.FileMode(0),
+		Atime:  ^uint32(0),
+		Mtime:  ^uint32(0),
+		Length: ^uint64(0),
+	}
+}
+
+// SimpleClient provides a simple API for working with 9P servers. It is not
+// the most efficient way to use 9P, but allows using such servers with little
+// to no clue about what exactly 9P is.
 type SimpleClient struct {
 	c       *Client
 	maxSize uint32
@@ -82,7 +96,12 @@ func (c *SimpleClient) setup(username, servicename string) error {
 
 	c.maxSize = vresp.MaxSize
 
-	t, _ := c.c.Tag()
+	t, err := c.c.Tag()
+	if err != nil {
+		c.c.Stop()
+		c.c = nil
+		return err
+	}
 
 	resp, err = c.c.Send(&qp.AttachRequest{
 		Tag:      t,
@@ -110,7 +129,10 @@ func (c *SimpleClient) readAll(fid qp.Fid) ([]byte, error) {
 	var b []byte
 
 	for {
-		t, _ := c.c.Tag()
+		t, err := c.c.Tag()
+		if err != nil {
+			return nil, err
+		}
 		resp, err := c.c.Send(&qp.ReadRequest{
 			Tag:    t,
 			Fid:    fid,
@@ -144,7 +166,10 @@ func (c *SimpleClient) writeAll(fid qp.Fid, data []byte) error {
 		if len(data[offset:]) < count {
 			count = len(data[offset:])
 		}
-		t, _ := c.c.Tag()
+		t, err := c.c.Tag()
+		if err != nil {
+			return err
+		}
 		resp, err := c.c.Send(&qp.WriteRequest{
 			Tag:    t,
 			Fid:    fid,
@@ -180,7 +205,10 @@ func (c *SimpleClient) walkTo(file string) (qp.Fid, qp.Qid, error) {
 	s = strs
 
 	f := c.getFid()
-	t, _ := c.c.Tag()
+	t, err := c.c.Tag()
+	if err != nil {
+		return qp.NOFID, qp.Qid{}, err
+	}
 	resp, err := c.c.Send(&qp.WalkRequest{
 		Tag:    t,
 		Fid:    c.root,
@@ -235,7 +263,10 @@ func (c *SimpleClient) Read(file string) ([]byte, error) {
 	}
 	defer c.clunk(fid)
 
-	t, _ := c.c.Tag()
+	t, err := c.c.Tag()
+	if err != nil {
+		return nil, err
+	}
 	resp, err := c.c.Send(&qp.OpenRequest{
 		Tag:  t,
 		Fid:  fid,
@@ -258,7 +289,10 @@ func (c *SimpleClient) Write(content []byte, file string) error {
 	}
 	defer c.clunk(fid)
 
-	t, _ := c.c.Tag()
+	t, err := c.c.Tag()
+	if err != nil {
+		return err
+	}
 	resp, err := c.c.Send(&qp.OpenRequest{
 		Tag:  t,
 		Fid:  fid,
@@ -281,7 +315,10 @@ func (c *SimpleClient) List(file string) ([]string, error) {
 	}
 	defer c.clunk(fid)
 
-	t, _ := c.c.Tag()
+	t, err := c.c.Tag()
+	if err != nil {
+		return nil, err
+	}
 	resp, err := c.c.Send(&qp.OpenRequest{
 		Tag:  t,
 		Fid:  fid,
@@ -331,7 +368,10 @@ func (c *SimpleClient) Create(name string, directory bool) error {
 		perms |= qp.DMDIR
 	}
 
-	t, _ := c.c.Tag()
+	t, err := c.c.Tag()
+	if err != nil {
+		return err
+	}
 	resp, err := c.c.Send(&qp.CreateRequest{
 		Tag:         t,
 		Fid:         fid,
@@ -348,21 +388,67 @@ func (c *SimpleClient) Create(name string, directory bool) error {
 	return nil
 }
 
+func (c *SimpleClient) Rename(oldname, newname string) error {
+	sold := strings.Split(oldname, "/")
+	snew := strings.Split(newname, "/")
+	if len(sold) != len(snew) {
+		return errors.New("invalid rename")
+	}
+
+	for i := 0; i < len(sold)-1; i++ {
+		if sold[i] != snew[i] {
+			return errors.New("invalid rename")
+		}
+	}
+
+	fid, _, err := c.walkTo(oldname)
+	if err != nil {
+		return err
+	}
+	defer c.clunk(fid)
+
+	s := emptyStat()
+	s.Name = snew[len(snew)-1]
+
+	t, err := c.c.Tag()
+	if err != nil {
+		return err
+	}
+	resp, err := c.c.Send(&qp.WriteStatRequest{
+		Tag:  t,
+		Fid:  fid,
+		Stat: s,
+	})
+	if err != nil {
+		return err
+	}
+	if err = toError(resp); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c *SimpleClient) Remove(name string) error {
 	fid, _, err := c.walkTo(name)
 	if err != nil {
 		return err
 	}
 
-	t, _ := c.c.Tag()
+	t, err := c.c.Tag()
+	if err != nil {
+		c.clunk(fid)
+		return err
+	}
 	resp, err := c.c.Send(&qp.RemoveRequest{
 		Tag: t,
 		Fid: fid,
 	})
 	if err != nil {
+		c.clunk(fid)
 		return err
 	}
 	if err = toError(resp); err != nil {
+		c.clunk(fid)
 		return err
 	}
 	return nil

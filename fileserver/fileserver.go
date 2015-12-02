@@ -84,10 +84,10 @@ func (fs *FileServer) cleanup() {
 func (fs *FileServer) logreq(m qp.Message) {
 	switch fs.Verbosity {
 	case Chatty, Loud:
-		t := m.(qp.Tagger).GetTag()
+		t := m.GetTag()
 		log.Printf("-> [%04X]%T", t, m)
 	case Obnoxious, Debug:
-		t := m.(qp.Tagger).GetTag()
+		t := m.GetTag()
 		log.Printf("-> [%04X]%T    \t%+v", t, m, m)
 	}
 }
@@ -95,10 +95,10 @@ func (fs *FileServer) logreq(m qp.Message) {
 func (fs *FileServer) logresp(m qp.Message) {
 	switch fs.Verbosity {
 	case Loud:
-		t := m.(qp.Tagger).GetTag()
+		t := m.GetTag()
 		log.Printf("<- [%04X]%T", t, m)
 	case Obnoxious, Debug:
-		t := m.(qp.Tagger).GetTag()
+		t := m.GetTag()
 		log.Printf("<- [%04X]%T    \t%+v", t, m, m)
 	}
 }
@@ -717,7 +717,7 @@ func (fs *FileServer) Start() error {
 			break
 		}
 
-		fs.addTag(m.(qp.Tagger).GetTag())
+		fs.addTag(m.GetTag())
 		fs.logreq(m)
 
 		switch mx := m.(type) {

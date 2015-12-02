@@ -74,7 +74,7 @@ func (c *Client) write(t qp.Tag, m qp.Message) error {
 func (c *Client) received(m qp.Message) error {
 	c.queueLock.Lock()
 	defer c.queueLock.Unlock()
-	t := m.(qp.Tagger).GetTag()
+	t := m.GetTag()
 	if ch, ok := c.queue[t]; ok {
 		ch <- m
 		close(ch)
@@ -116,7 +116,7 @@ func (c *Client) Tag() (qp.Tag, error) {
 
 // Send sends a message and retrieves the response.
 func (c *Client) Send(m qp.Message) (qp.Message, error) {
-	t := m.(qp.Tagger).GetTag()
+	t := m.GetTag()
 	ch, err := c.getChannel(t)
 	if err != nil {
 		c.killChannel(t)

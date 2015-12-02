@@ -8,9 +8,13 @@ import (
 	"github.com/joushou/qp"
 )
 
+// RAMTree represents an in-memory directory. Create on this directory will
+// add an in-memory RAMFile. It is capable of containing any item implementing
+// the File interface, in-memory or not. It supports basic permission checking
+// at owner and global, but not group level due to not having a group
+// database. Access and modified time is kept track of as well.
 type RAMTree struct {
 	sync.RWMutex
-	parent      Dir
 	tree        map[string]File
 	id          uint64
 	name        string
@@ -22,18 +26,6 @@ type RAMTree struct {
 	mtime       time.Time
 	permissions qp.FileMode
 	opens       uint
-}
-
-func (t *RAMTree) SetParent(d Dir) error {
-	t.parent = d
-	return nil
-}
-
-func (t *RAMTree) Parent() (Dir, error) {
-	if t.parent == nil {
-		return t, nil
-	}
-	return t.parent, nil
 }
 
 func (t *RAMTree) Qid() (qp.Qid, error) {
@@ -98,7 +90,7 @@ func (t *RAMTree) Accessed(_ OpenFile) {
 func (t *RAMTree) Modified(_ OpenFile) {
 	t.Lock()
 	defer t.Unlock()
-	t.mtine = time.Now()
+	t.mtime = time.Now()
 	t.atime = t.mtime
 	t.version++
 }

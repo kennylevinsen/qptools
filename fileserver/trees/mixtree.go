@@ -20,17 +20,19 @@ func (mt *MixTree) Name() (string, error) {
 // List combines the list of Top and Bottom directories, returning a directory
 // listing where entries in Top have priority over Bottom.
 func (mt *MixTree) List(user string) ([]qp.Stat, error) {
+	m := make(map[string]qp.Stat)
+
 	l1, err := mt.Bottom.(Lister).List(user)
 	if err != nil {
 		return nil, err
 	}
+	for _, s := range l1 {
+		m[s.Name] = s
+	}
+
 	l2, err := mt.Top.(Lister).List(user)
 	if err != nil {
 		return nil, err
-	}
-	m := make(map[string]qp.Stat)
-	for _, s := range l1 {
-		m[s.Name] = s
 	}
 	for _, s := range l2 {
 		m[s.Name] = s
