@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/joushou/qp"
-	"github.com/joushou/qptools/fileserver"
 )
 
 type RAMOpenTree struct {
@@ -95,8 +94,8 @@ func (ot *RAMOpenTree) Close() error {
 
 type RAMTree struct {
 	sync.RWMutex
-	parent      fileserver.Dir
-	tree        map[string]fileserver.File
+	parent      Dir
+	tree        map[string]File
 	id          uint64
 	name        string
 	user        string
@@ -109,12 +108,12 @@ type RAMTree struct {
 	opens       uint
 }
 
-func (t *RAMTree) SetParent(d fileserver.Dir) error {
+func (t *RAMTree) SetParent(d Dir) error {
 	t.parent = d
 	return nil
 }
 
-func (t *RAMTree) Parent() (fileserver.Dir, error) {
+func (t *RAMTree) Parent() (Dir, error) {
 	if t.parent == nil {
 		return t, nil
 	}
@@ -174,7 +173,27 @@ func (t *RAMTree) Stat() (qp.Stat, error) {
 	}, nil
 }
 
-func (t *RAMTree) Open(user string, mode qp.OpenMode) (fileserver.OpenFile, error) {
+func (t *RAMTree) List(user string) ([]qp.Stat, error) {
+	t.RLock()
+	defer t.RUnlock()
+	owner := t.user == user
+
+	if !permCheck(owner, t.permissions, qp.OREAD) {
+		return nil, errors.New("access denied")
+	}
+
+	var s []qp.Stat
+	for _, i := range t.tree {
+		y, err := i.Stat()
+		if err != nil {
+			return nil, err
+		}
+		s = append(s, y)
+	}
+	return s, nil
+}
+
+func (t *RAMTree) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 	t.Lock()
 	defer t.Unlock()
 	owner := t.user == user
@@ -192,7 +211,7 @@ func (t *RAMTree) CanRemove() (bool, error) {
 	return len(t.tree) == 0, nil
 }
 
-func (t *RAMTree) Create(user, name string, perms qp.FileMode) (fileserver.File, error) {
+func (t *RAMTree) Create(user, name string, perms qp.FileMode) (File, error) {
 	t.Lock()
 	defer t.Unlock()
 	owner := t.user == user
@@ -205,7 +224,7 @@ func (t *RAMTree) Create(user, name string, perms qp.FileMode) (fileserver.File,
 		return nil, errors.New("file already exists")
 	}
 
-	var d fileserver.File
+	var d File
 	if perms&qp.DMDIR != 0 {
 		perms = perms & (^qp.FileMode(0777) | (t.permissions & 0777))
 		d = NewRAMTree(name, perms, t.user, t.group)
@@ -222,7 +241,7 @@ func (t *RAMTree) Create(user, name string, perms qp.FileMode) (fileserver.File,
 	return d, nil
 }
 
-func (t *RAMTree) Add(name string, f fileserver.File) error {
+func (t *RAMTree) Add(name string, f File) error {
 	t.Lock()
 	defer t.Unlock()
 	_, ok := t.tree[name]
@@ -284,7 +303,7 @@ func (t *RAMTree) Remove(user, name string) error {
 	return errors.New("no such file")
 }
 
-func (t *RAMTree) Walk(user string, name string) (fileserver.File, error) {
+func (t *RAMTree) Walk(user string, name string) (File, error) {
 	t.Lock()
 	defer t.Unlock()
 	owner := t.user == user
@@ -308,7 +327,7 @@ func (t *RAMTree) IsDir() (bool, error) {
 func NewRAMTree(name string, permissions qp.FileMode, user, group string) *RAMTree {
 	return &RAMTree{
 		name:        name,
-		tree:        make(map[string]fileserver.File),
+		tree:        make(map[string]File),
 		permissions: permissions,
 		user:        user,
 		group:       group,

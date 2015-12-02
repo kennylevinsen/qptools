@@ -23,6 +23,13 @@ var (
 	ErrWeirdResponse          = errors.New("weird response")
 )
 
+func toError(m qp.Message) error {
+	if eresp, ok := m.(*qp.ErrorResponse); ok {
+		return errors.New(eresp.Error)
+	}
+	return nil
+}
+
 type SimpleClient struct {
 	c       *Client
 	maxSize uint32
@@ -48,10 +55,41 @@ func (c *SimpleClient) setup(username, servicename string) error {
 		return ErrSimpleClientNotStarted
 	}
 
-	vresp, err := c.c.Send(&qp.VersionRequest{
+	resp, err := c.c.Send(&qp.VersionRequest{
 		Tag:     qp.NOTAG,
 		MaxSize: DefaultMaxSize,
 		Version: qp.Version,
+	})
+	if err != nil {
+		c.c.Stop()
+		c.c = nil
+		return err
+	}
+	if err = toError(resp); err != nil {
+		c.c.Stop()
+		c.c = nil
+		return err
+	}
+
+	vresp, ok := resp.(*qp.VersionResponse)
+	if !ok {
+		return ErrWeirdResponse
+	}
+
+	if vresp.Version != qp.Version {
+		return ErrUnknownProtocol
+	}
+
+	c.maxSize = vresp.MaxSize
+
+	t, _ := c.c.Tag()
+
+	resp, err = c.c.Send(&qp.AttachRequest{
+		Tag:      t,
+		Fid:      c.root,
+		AuthFid:  qp.NOFID,
+		Username: username,
+		Service:  servicename,
 	})
 
 	if err != nil {
@@ -59,28 +97,7 @@ func (c *SimpleClient) setup(username, servicename string) error {
 		c.c = nil
 		return err
 	}
-
-	resp, ok := vresp.(*qp.VersionResponse)
-	if !ok {
-		return ErrWeirdResponse
-	}
-
-	if resp.Version != qp.Version {
-		return ErrUnknownProtocol
-	}
-
-	c.maxSize = resp.MaxSize
-
-	t, _ := c.c.Tag()
-
-	_, err = c.c.Send(&qp.AttachRequest{
-		Tag:      t,
-		Fid:      c.root,
-		AuthFid:  qp.NOFID,
-		Username: username,
-		Service:  servicename,
-	})
-	if err != nil {
+	if err = toError(resp); err != nil {
 		c.c.Stop()
 		c.c = nil
 		return err
@@ -103,7 +120,9 @@ func (c *SimpleClient) readAll(fid qp.Fid) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-
+		if err = toError(resp); err != nil {
+			return nil, err
+		}
 		rresp, ok := resp.(*qp.ReadResponse)
 		if !ok {
 			return nil, ErrWeirdResponse
@@ -133,6 +152,9 @@ func (c *SimpleClient) writeAll(fid qp.Fid, data []byte) error {
 			Data:   data[offset : offset+uint64(count)],
 		})
 		if err != nil {
+			return err
+		}
+		if err = toError(resp); err != nil {
 			return err
 		}
 
@@ -166,6 +188,9 @@ func (c *SimpleClient) walkTo(file string) (qp.Fid, qp.Qid, error) {
 		Names:  s,
 	})
 	if err != nil {
+		return qp.NOFID, qp.Qid{}, err
+	}
+	if err = toError(resp); err != nil {
 		return qp.NOFID, qp.Qid{}, err
 	}
 
@@ -211,12 +236,15 @@ func (c *SimpleClient) Read(file string) ([]byte, error) {
 	defer c.clunk(fid)
 
 	t, _ := c.c.Tag()
-	_, err = c.c.Send(&qp.OpenRequest{
+	resp, err := c.c.Send(&qp.OpenRequest{
 		Tag:  t,
 		Fid:  fid,
 		Mode: qp.OREAD,
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err = toError(resp); err != nil {
 		return nil, err
 	}
 
@@ -231,12 +259,15 @@ func (c *SimpleClient) Write(content []byte, file string) error {
 	defer c.clunk(fid)
 
 	t, _ := c.c.Tag()
-	_, err = c.c.Send(&qp.OpenRequest{
+	resp, err := c.c.Send(&qp.OpenRequest{
 		Tag:  t,
 		Fid:  fid,
 		Mode: qp.OWRITE,
 	})
 	if err != nil {
+		return err
+	}
+	if err = toError(resp); err != nil {
 		return err
 	}
 
@@ -251,13 +282,15 @@ func (c *SimpleClient) List(file string) ([]string, error) {
 	defer c.clunk(fid)
 
 	t, _ := c.c.Tag()
-	_, err = c.c.Send(&qp.OpenRequest{
+	resp, err := c.c.Send(&qp.OpenRequest{
 		Tag:  t,
 		Fid:  fid,
 		Mode: qp.OREAD,
 	})
-
 	if err != nil {
+		return nil, err
+	}
+	if err = toError(resp); err != nil {
 		return nil, err
 	}
 
@@ -299,14 +332,20 @@ func (c *SimpleClient) Create(name string, directory bool) error {
 	}
 
 	t, _ := c.c.Tag()
-	_, err = c.c.Send(&qp.CreateRequest{
+	resp, err := c.c.Send(&qp.CreateRequest{
 		Tag:         t,
 		Fid:         fid,
 		Name:        file,
 		Permissions: perms,
 		Mode:        qp.OREAD,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if err = toError(resp); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *SimpleClient) Remove(name string) error {
@@ -316,11 +355,17 @@ func (c *SimpleClient) Remove(name string) error {
 	}
 
 	t, _ := c.c.Tag()
-	_, err = c.c.Send(&qp.RemoveRequest{
+	resp, err := c.c.Send(&qp.RemoveRequest{
 		Tag: t,
 		Fid: fid,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if err = toError(resp); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *SimpleClient) Dial(network, address, username, servicename string) error {

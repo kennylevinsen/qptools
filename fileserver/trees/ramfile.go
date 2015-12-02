@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/joushou/qp"
-	"github.com/joushou/qptools/fileserver"
 )
 
 type RAMOpenFile struct {
@@ -95,7 +94,7 @@ func (of *RAMOpenFile) Close() error {
 
 type RAMFile struct {
 	sync.RWMutex
-	parent      fileserver.Dir
+	parent      Dir
 	content     []byte
 	id          uint64
 	name        string
@@ -109,12 +108,12 @@ type RAMFile struct {
 	opens       uint
 }
 
-func (f *RAMFile) SetParent(d fileserver.Dir) error {
+func (f *RAMFile) SetParent(d Dir) error {
 	f.parent = d
 	return nil
 }
 
-func (f *RAMFile) Parent() (fileserver.Dir, error) {
+func (f *RAMFile) Parent() (Dir, error) {
 	return f.parent, nil
 }
 
@@ -169,7 +168,7 @@ func (f *RAMFile) Stat() (qp.Stat, error) {
 	}, nil
 }
 
-func (f *RAMFile) Open(user string, mode qp.OpenMode) (fileserver.OpenFile, error) {
+func (f *RAMFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 	owner := f.user == user
 	if !permCheck(owner, f.permissions, mode) {
 		return nil, errors.New("access denied")

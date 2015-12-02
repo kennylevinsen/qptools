@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/joushou/qp"
-	"github.com/joushou/qptools/fileserver"
 )
 
 func openMode2Flag(fm qp.OpenMode) int {
@@ -222,7 +221,7 @@ func (pf *ProxyFile) Stat() (qp.Stat, error) {
 	return st, nil
 }
 
-func (pf *ProxyFile) Open(_ string, mode qp.OpenMode) (fileserver.OpenFile, error) {
+func (pf *ProxyFile) Open(_ string, mode qp.OpenMode) (OpenFile, error) {
 	if err := pf.updateInfo(); err != nil {
 		return nil, err
 	}
@@ -249,7 +248,7 @@ func (pf *ProxyFile) CanRemove() (bool, error) {
 	return true, nil
 }
 
-func (pf *ProxyFile) Walk(_, name string) (fileserver.File, error) {
+func (pf *ProxyFile) Walk(_, name string) (File, error) {
 	p := filepath.Join(pf.path, name)
 
 	if _, err := os.Stat(filepath.Join(pf.root, p)); os.IsNotExist(err) {
@@ -264,7 +263,7 @@ func (pf *ProxyFile) Walk(_, name string) (fileserver.File, error) {
 	}, nil
 }
 
-func (pf *ProxyFile) Create(_, name string, perms qp.FileMode) (fileserver.File, error) {
+func (pf *ProxyFile) Create(_, name string, perms qp.FileMode) (File, error) {
 	p := filepath.Join(pf.path, name)
 	if perms&qp.DMDIR != 0 {
 		err := os.Mkdir(filepath.Join(pf.root, p), os.FileMode(perms&0777))
@@ -303,7 +302,7 @@ func (pf *ProxyFile) IsDir() (bool, error) {
 	return pf.info.IsDir(), nil
 }
 
-func NewProxyTree(root, path, user, group string) fileserver.Dir {
+func NewProxyTree(root, path, user, group string) Dir {
 	return &ProxyFile{
 		root:  root,
 		path:  path,

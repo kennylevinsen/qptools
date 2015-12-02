@@ -19,6 +19,35 @@ func nextID() uint64 {
 	return id
 }
 
+type File interface {
+	Name() (string, error)
+
+	Open(user string, mode qp.OpenMode) (OpenFile, error)
+
+	Qid() (qp.Qid, error)
+	Stat() (qp.Stat, error)
+	WriteStat(qp.Stat) error
+
+	IsDir() (bool, error)
+	CanRemove() (bool, error)
+}
+
+type Dir interface {
+	File
+
+	Walk(user, name string) (File, error)
+	Create(user, name string, perms qp.FileMode) (File, error)
+	Remove(user, name string) error
+	Rename(user, oldname, newname string) error
+}
+
+type OpenFile interface {
+	Seek(offset int64, whence int) (int64, error)
+	Read(p []byte) (int, error)
+	Write(p []byte) (int, error)
+	Close() error
+}
+
 func permCheck(owner bool, permissions qp.FileMode, mode qp.OpenMode) bool {
 	var offset uint8
 	if owner {

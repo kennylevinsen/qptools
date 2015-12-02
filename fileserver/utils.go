@@ -4,47 +4,19 @@ import (
 	"errors"
 
 	"github.com/joushou/qp"
+	"github.com/joushou/qptools/fileserver/trees"
 )
 
-type File interface {
-	Name() (string, error)
+type FilePath []trees.File
 
-	Open(user string, mode qp.OpenMode) (OpenFile, error)
-
-	Qid() (qp.Qid, error)
-	Stat() (qp.Stat, error)
-	WriteStat(qp.Stat) error
-
-	IsDir() (bool, error)
-	CanRemove() (bool, error)
-}
-
-type Dir interface {
-	File
-
-	Walk(user, name string) (File, error)
-	Create(user, name string, perms qp.FileMode) (File, error)
-	Remove(user, name string) error
-	Rename(user, oldname, newname string) error
-}
-
-type OpenFile interface {
-	Seek(offset int64, whence int) (int64, error)
-	Read(p []byte) (int, error)
-	Write(p []byte) (int, error)
-	Close() error
-}
-
-type FilePath []File
-
-func (fp FilePath) Current() File {
+func (fp FilePath) Current() trees.File {
 	if len(fp) == 0 {
 		return nil
 	}
 	return fp[len(fp)-1]
 }
 
-func (fp FilePath) Parent() File {
+func (fp FilePath) Parent() trees.File {
 	if len(fp) == 0 {
 		return nil
 	} else if len(fp) == 1 {
@@ -53,7 +25,7 @@ func (fp FilePath) Parent() File {
 	return fp[len(fp)-2]
 }
 
-func setStat(user string, e File, parent Dir, nstat qp.Stat) error {
+func setStat(user string, e trees.File, parent trees.Dir, nstat qp.Stat) error {
 	ostat, err := e.Stat()
 	if err != nil {
 		return err

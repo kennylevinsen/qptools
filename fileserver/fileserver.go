@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/joushou/qp"
+	"github.com/joushou/qptools/fileserver/trees"
 )
 
 // These are the error strings used by the fileserver itself. Do note that the
@@ -43,7 +44,7 @@ type fidState struct {
 	sync.RWMutex
 	location FilePath
 
-	open     OpenFile
+	open     trees.OpenFile
 	mode     qp.OpenMode
 	username string
 }
@@ -52,8 +53,8 @@ type fidState struct {
 type FileServer struct {
 	RW          io.ReadWriter
 	Verbosity   Verbosity
-	DefaultRoot Dir
-	Roots       map[string]Dir
+	DefaultRoot trees.Dir
+	Roots       map[string]trees.Dir
 
 	// internal
 	writeLock sync.Mutex
@@ -209,7 +210,7 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 		return
 	}
 
-	var root Dir
+	var root trees.Dir
 	if x, exists := fs.Roots[r.Service]; exists {
 		root = x
 	} else {
@@ -308,7 +309,7 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 				goto done
 			}
 
-			d := root.(Dir)
+			d := root.(trees.Dir)
 			root, err = d.Walk(state.username, name)
 			if err != nil {
 				goto done
@@ -455,7 +456,7 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 		return
 	}
 
-	dir := cur.(Dir)
+	dir := cur.(trees.Dir)
 
 	l, err := dir.Create(state.username, r.Name, r.Permissions)
 	if err != nil {
@@ -633,7 +634,7 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 		return
 	}
 
-	p.(Dir).Remove(state.username, n)
+	p.(trees.Dir).Remove(state.username, n)
 
 	fs.respond(r.Tag, &qp.RemoveResponse{
 		Tag: r.Tag,
@@ -692,9 +693,9 @@ func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 		return
 	}
 
-	var p Dir
+	var p trees.Dir
 	if len(state.location) > 1 {
-		p = state.location.Parent().(Dir)
+		p = state.location.Parent().(trees.Dir)
 	}
 
 	if err := setStat(state.username, l, p, r.Stat); err != nil {
@@ -772,7 +773,7 @@ func (fs *FileServer) Start() error {
 // should look for directory roots based on service name. defaultRoot is the
 // root that will be used if the service wasn't in the map. If the service is
 // not in the map, and there is no default set, attach will fail.
-func New(rw io.ReadWriter, defaultRoot Dir, roots map[string]Dir, v Verbosity) *FileServer {
+func New(rw io.ReadWriter, defaultRoot trees.Dir, roots map[string]trees.Dir, v Verbosity) *FileServer {
 	fs := &FileServer{
 		RW:          rw,
 		DefaultRoot: defaultRoot,
