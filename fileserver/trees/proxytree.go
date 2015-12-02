@@ -1,7 +1,6 @@
 package trees
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -33,94 +32,6 @@ func openMode2Flag(fm qp.OpenMode) int {
 	}
 
 	return nfm
-}
-
-type ProxyOpenTree struct {
-	t      *ProxyFile
-	f      *os.File
-	path   string
-	buffer []byte
-	offset int64
-}
-
-func (ot *ProxyOpenTree) update() error {
-	_, err := ot.f.Seek(0, 0)
-	if err != nil {
-		return err
-	}
-
-	buf := new(bytes.Buffer)
-	dir, err := ot.f.Readdir(-1)
-	if err != nil {
-		return err
-	}
-
-	for _, f := range dir {
-		pf := &ProxyFile{
-			path: f.Name(),
-			info: f,
-		}
-
-		// We gave it a stat, we just need the encoding
-		pf.cache(true)
-		y, err := pf.Stat()
-		if err != nil {
-			return err
-		}
-		y.Encode(buf)
-	}
-	ot.buffer = buf.Bytes()
-	return nil
-}
-
-func (ot *ProxyOpenTree) Seek(offset int64, whence int) (int64, error) {
-	if ot.t == nil {
-		return 0, errors.New("file not open")
-	}
-	length := int64(len(ot.buffer))
-	switch whence {
-	case 0:
-	case 1:
-		offset = ot.offset + offset
-	case 2:
-		offset = length + offset
-	default:
-		return ot.offset, errors.New("invalid whence value")
-	}
-
-	if offset < 0 {
-		return ot.offset, errors.New("negative seek invalid")
-	}
-
-	if offset != 0 && offset != ot.offset {
-		return ot.offset, errors.New("seek to other than 0 on dir illegal")
-	}
-
-	ot.offset = offset
-	ot.update()
-	return ot.offset, nil
-}
-
-func (ot *ProxyOpenTree) Read(p []byte) (int, error) {
-	if ot.t == nil {
-		return 0, errors.New("file not open")
-	}
-	rlen := int64(len(p))
-	if rlen > int64(len(ot.buffer))-ot.offset {
-		rlen = int64(len(ot.buffer)) - ot.offset
-	}
-	copy(p, ot.buffer[ot.offset:rlen+ot.offset])
-	ot.offset += rlen
-	return int(rlen), nil
-}
-
-func (ot *ProxyOpenTree) Write(p []byte) (int, error) {
-	return 0, errors.New("cannot write to directory")
-}
-
-func (ot *ProxyOpenTree) Close() error {
-	ot.t = nil
-	return ot.f.Close()
 }
 
 type ProxyFile struct {
@@ -210,38 +121,86 @@ func (pf *ProxyFile) Stat() (qp.Stat, error) {
 	if pf.info.IsDir() {
 		st.Mode |= qp.DMDIR
 	}
-	st.Atime = uint32(pf.info.ModTime().Unix())
-	st.Mtime = st.Mtime
+	st.Mtime = uint32(pf.info.ModTime().Unix())
+	st.Atime = st.Mtime
 	st.Length = uint64(pf.info.Size())
+	if pf.info.IsDir() {
+		st.Length = 0
+	}
 	st.Name = filepath.Base(pf.path)
 	st.UID = pf.user
-	st.GID = pf.user
+	st.GID = pf.group
 	st.MUID = pf.user
-
 	return st, nil
 }
 
-func (pf *ProxyFile) Open(_ string, mode qp.OpenMode) (OpenFile, error) {
+func (pf *ProxyFile) List(_ string) ([]qp.Stat, error) {
 	if err := pf.updateInfo(); err != nil {
 		return nil, err
 	}
 	pf.cache(true)
 	defer pf.cache(false)
 
-	f, err := os.OpenFile(filepath.Join(pf.root, pf.path), openMode2Flag(mode), 0)
+	isdir, err := pf.IsDir()
+	if err != nil {
+		return nil, err
+	}
+	if !isdir {
+		return nil, errors.New("not a directory")
+	}
+
+	f, err := os.OpenFile(filepath.Join(pf.root, pf.path), openMode2Flag(qp.OREAD), 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	dir, err := f.Readdir(-1)
 	if err != nil {
 		return nil, err
 	}
 
-	if p, _ := pf.IsDir(); p {
-		return &ProxyOpenTree{
+	var s []qp.Stat
+	for _, f := range dir {
+		tpf := &ProxyFile{
+			path:  f.Name(),
+			info:  f,
+			user:  pf.user,
+			group: pf.group,
+		}
+
+		tpf.cache(true)
+		y, err := tpf.Stat()
+		if err != nil {
+			return nil, err
+		}
+		s = append(s, y)
+		tpf.cache(false)
+	}
+
+	return s, nil
+}
+
+func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
+	if err := pf.updateInfo(); err != nil {
+		return nil, err
+	}
+	pf.cache(true)
+	defer pf.cache(false)
+
+	isdir, err := pf.IsDir()
+	if err != nil {
+		return nil, err
+	}
+
+	if isdir {
+		return &ListOpenTree{
 			t:    pf,
-			f:    f,
-			path: filepath.Join(pf.root, pf.path),
+			user: user,
 		}, nil
 	}
 
-	return f, nil
+	return os.OpenFile(filepath.Join(pf.root, pf.path), openMode2Flag(mode), 0)
 }
 
 func (pf *ProxyFile) CanRemove() (bool, error) {
@@ -258,8 +217,10 @@ func (pf *ProxyFile) Walk(_, name string) (File, error) {
 	}
 
 	return &ProxyFile{
-		root: pf.root,
-		path: p,
+		root:  pf.root,
+		path:  p,
+		user:  pf.user,
+		group: pf.group,
 	}, nil
 }
 
@@ -279,8 +240,10 @@ func (pf *ProxyFile) Create(_, name string, perms qp.FileMode) (File, error) {
 	}
 
 	return &ProxyFile{
-		root: pf.root,
-		path: p,
+		root:  pf.root,
+		path:  p,
+		user:  pf.user,
+		group: pf.group,
 	}, nil
 }
 

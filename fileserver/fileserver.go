@@ -161,7 +161,6 @@ func (fs *FileServer) addTag(t qp.Tag) error {
 }
 
 func (fs *FileServer) version(r *qp.VersionRequest) {
-	fs.addTag(r.Tag)
 	maxsize := r.MaxSize
 	if maxsize > 1024*1024 {
 		maxsize = 1024 * 1024
@@ -187,6 +186,7 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 	fs.cleanup()
 	fs.fids = make(map[qp.Fid]*fidState)
 	fs.tags = make(map[qp.Tag]bool)
+	fs.addTag(r.Tag)
 
 	fs.respond(r.Tag, &qp.VersionResponse{
 		Tag:     r.Tag,
@@ -780,6 +780,7 @@ func New(rw io.ReadWriter, defaultRoot trees.Dir, roots map[string]trees.Dir, v 
 		Roots:       roots,
 		Verbosity:   v,
 		p:           qp.NineP2000,
+		tags:        make(map[qp.Tag]bool),
 	}
 
 	if v == Debug {

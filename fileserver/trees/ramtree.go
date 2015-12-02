@@ -1,96 +1,12 @@
 package trees
 
 import (
-	"bytes"
 	"errors"
 	"sync"
 	"time"
 
 	"github.com/joushou/qp"
 )
-
-type RAMOpenTree struct {
-	t      *RAMTree
-	buffer []byte
-	offset int64
-}
-
-func (ot *RAMOpenTree) update() error {
-	ot.t.RLock()
-	defer ot.t.RUnlock()
-	buf := new(bytes.Buffer)
-	for _, i := range ot.t.tree {
-		y, err := i.Stat()
-		if err != nil {
-			return err
-		}
-		y.Encode(buf)
-	}
-	ot.buffer = buf.Bytes()
-	return nil
-}
-
-func (ot *RAMOpenTree) Seek(offset int64, whence int) (int64, error) {
-	if ot.t == nil {
-		return 0, errors.New("file not open")
-	}
-	ot.t.RLock()
-	defer ot.t.RUnlock()
-	length := int64(len(ot.buffer))
-	switch whence {
-	case 0:
-	case 1:
-		offset = ot.offset + offset
-	case 2:
-		offset = length + offset
-	default:
-		return ot.offset, errors.New("invalid whence value")
-	}
-
-	if offset < 0 {
-		return ot.offset, errors.New("negative seek invalid")
-	}
-
-	if offset != 0 && offset != ot.offset {
-		return ot.offset, errors.New("seek to other than 0 on dir illegal")
-	}
-
-	ot.offset = offset
-	err := ot.update()
-	if err != nil {
-		return 0, err
-	}
-	ot.t.atime = time.Now()
-	return ot.offset, nil
-}
-
-func (ot *RAMOpenTree) Read(p []byte) (int, error) {
-	if ot.t == nil {
-		return 0, errors.New("file not open")
-	}
-	ot.t.RLock()
-	defer ot.t.RUnlock()
-	rlen := int64(len(p))
-	if rlen > int64(len(ot.buffer))-ot.offset {
-		rlen = int64(len(ot.buffer)) - ot.offset
-	}
-	copy(p, ot.buffer[ot.offset:rlen+ot.offset])
-	ot.offset += rlen
-	ot.t.atime = time.Now()
-	return int(rlen), nil
-}
-
-func (ot *RAMOpenTree) Write(p []byte) (int, error) {
-	return 0, errors.New("cannot write to directory")
-}
-
-func (ot *RAMOpenTree) Close() error {
-	ot.t.Lock()
-	defer ot.t.Unlock()
-	ot.t.opens--
-	ot.t = nil
-	return nil
-}
 
 type RAMTree struct {
 	sync.RWMutex
@@ -173,6 +89,26 @@ func (t *RAMTree) Stat() (qp.Stat, error) {
 	}, nil
 }
 
+func (t *RAMTree) Accessed(_ OpenFile) {
+	t.Lock()
+	defer t.Unlock()
+	t.atime = time.Now()
+}
+
+func (t *RAMTree) Modified(_ OpenFile) {
+	t.Lock()
+	defer t.Unlock()
+	t.mtine = time.Now()
+	t.atime = t.mtime
+	t.version++
+}
+
+func (t *RAMTree) Closed(_ OpenFile) {
+	t.Lock()
+	defer t.Unlock()
+	t.opens--
+}
+
 func (t *RAMTree) List(user string) ([]qp.Stat, error) {
 	t.RLock()
 	defer t.RUnlock()
@@ -204,7 +140,10 @@ func (t *RAMTree) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 
 	t.atime = time.Now()
 	t.opens++
-	return &RAMOpenTree{t: t}, nil
+	return &ListOpenTree{
+		t:    t,
+		user: user,
+	}, nil
 }
 
 func (t *RAMTree) CanRemove() (bool, error) {

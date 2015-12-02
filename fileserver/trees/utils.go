@@ -48,6 +48,16 @@ type OpenFile interface {
 	Close() error
 }
 
+type Lister interface {
+	List(user string) ([]qp.Stat, error)
+}
+
+type AccessLogger interface {
+	Accessed(OpenFile)
+	Modified(OpenFile)
+	Closed(OpenFile)
+}
+
 func permCheck(owner bool, permissions qp.FileMode, mode qp.OpenMode) bool {
 	var offset uint8
 	if owner {
