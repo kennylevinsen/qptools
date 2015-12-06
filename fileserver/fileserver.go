@@ -81,24 +81,20 @@ func (fs *FileServer) cleanup() {
 	}
 }
 
-func (fs *FileServer) logreq(m qp.Message) {
+func (fs *FileServer) logreq(t qp.Tag, m qp.Message) {
 	switch fs.Verbosity {
 	case Chatty, Loud:
-		t := m.GetTag()
 		log.Printf("-> [%04X]%T", t, m)
 	case Obnoxious, Debug:
-		t := m.GetTag()
 		log.Printf("-> [%04X]%T    \t%+v", t, m, m)
 	}
 }
 
-func (fs *FileServer) logresp(m qp.Message) {
+func (fs *FileServer) logresp(t qp.Tag, m qp.Message) {
 	switch fs.Verbosity {
 	case Loud:
-		t := m.GetTag()
 		log.Printf("<- [%04X]%T", t, m)
 	case Obnoxious, Debug:
-		t := m.GetTag()
 		log.Printf("<- [%04X]%T    \t%+v", t, m, m)
 	}
 }
@@ -122,6 +118,7 @@ func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
 
 	delete(fs.tags, t)
 
+	/* maxsize conformance temporarily disabled.
 	l := uint32(m.EncodedLength())
 	if l > fs.maxsize {
 		if mx, ok := m.(*qp.ErrorResponse); ok {
@@ -133,9 +130,9 @@ func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
 				Error: ResponseTooLong,
 			}
 		}
-	}
+	}*/
 
-	fs.logresp(m)
+	fs.logresp(t, m)
 
 	fs.writeLock.Lock()
 	defer fs.writeLock.Unlock()
@@ -158,99 +155,6 @@ func (fs *FileServer) addTag(t qp.Tag) error {
 	}
 	fs.tags[t] = true
 	return nil
-}
-
-func (fs *FileServer) version(r *qp.VersionRequest) {
-	maxsize := r.MaxSize
-	if maxsize > 1024*1024 {
-		maxsize = 1024 * 1024
-	} else if maxsize < 128 {
-		// This makes no sense. Try to force the client up a bit.
-		maxsize = 128
-	}
-
-	fs.maxsize = maxsize
-
-	versionstr := r.Version
-	switch versionstr {
-	// case qp.VersionDote:
-	// 	fs.p = qp.NineP2000Dote
-	case qp.Version:
-		fs.p = qp.NineP2000
-	default:
-		fs.p = qp.NineP2000
-		versionstr = qp.UnknownVersion
-	}
-
-	// VersionRequest resets everything
-	fs.cleanup()
-	fs.fids = make(map[qp.Fid]*fidState)
-	fs.tags = make(map[qp.Tag]bool)
-	fs.addTag(r.Tag)
-
-	fs.respond(r.Tag, &qp.VersionResponse{
-		Tag:     r.Tag,
-		MaxSize: maxsize,
-		Version: versionstr,
-	})
-}
-
-func (fs *FileServer) auth(r *qp.AuthRequest) {
-	fs.addTag(r.Tag)
-	fs.sendError(r.Tag, AuthNotSupported)
-}
-
-func (fs *FileServer) attach(r *qp.AttachRequest) {
-	fs.addTag(r.Tag)
-	fs.fidLock.Lock()
-	defer fs.fidLock.Unlock()
-
-	if _, exists := fs.fids[r.Fid]; exists {
-		fs.sendError(r.Tag, FidInUse)
-		return
-	}
-
-	var root trees.Dir
-	if x, exists := fs.Roots[r.Service]; exists {
-		root = x
-	} else {
-		root = fs.DefaultRoot
-	}
-
-	if root == nil {
-		fs.sendError(r.Tag, NoSuchService)
-		return
-	}
-
-	s := &fidState{
-		username: r.Username,
-		location: FilePath{root},
-	}
-
-	fs.fids[r.Fid] = s
-
-	qid, err := root.Qid()
-	if err != nil {
-		fs.sendError(r.Tag, err.Error())
-		return
-	}
-
-	fs.respond(r.Tag, &qp.AttachResponse{
-		Tag: r.Tag,
-		Qid: qid,
-	})
-}
-
-func (fs *FileServer) flush(r *qp.FlushRequest) {
-	fs.addTag(r.Tag)
-	fs.tagLock.Lock()
-	if _, exists := fs.tags[r.OldTag]; exists {
-		delete(fs.tags, r.OldTag)
-	}
-	fs.tagLock.Unlock()
-	fs.respond(r.Tag, &qp.FlushResponse{
-		Tag: r.Tag,
-	})
 }
 
 func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
@@ -350,8 +254,106 @@ done:
 	return s, qids, nil
 }
 
+func (fs *FileServer) version(r *qp.VersionRequest) {
+	fs.logreq(r.Tag, r)
+	maxsize := r.MaxSize
+	if maxsize > 1024*1024*10 {
+		maxsize = 1024 * 1024 * 10
+	} else if maxsize < 128 {
+		// This makes no sense. Try to force the client up a bit.
+		maxsize = 128
+	}
+
+	fs.maxsize = maxsize
+
+	versionstr := r.Version
+	switch versionstr {
+	// case qp.VersionDote:
+	// 	fs.p = qp.NineP2000Dote
+	case qp.Version:
+		fs.p = qp.NineP2000
+	default:
+		fs.p = qp.NineP2000
+		versionstr = qp.UnknownVersion
+	}
+
+	// VersionRequest resets everything
+	fs.cleanup()
+	fs.fids = make(map[qp.Fid]*fidState)
+	fs.tags = make(map[qp.Tag]bool)
+	fs.addTag(r.Tag)
+
+	fs.respond(r.Tag, &qp.VersionResponse{
+		Tag:     r.Tag,
+		MaxSize: maxsize,
+		Version: versionstr,
+	})
+}
+
+func (fs *FileServer) auth(r *qp.AuthRequest) {
+	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
+	fs.sendError(r.Tag, AuthNotSupported)
+}
+
+func (fs *FileServer) attach(r *qp.AttachRequest) {
+	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
+	fs.fidLock.Lock()
+	defer fs.fidLock.Unlock()
+
+	if _, exists := fs.fids[r.Fid]; exists {
+		fs.sendError(r.Tag, FidInUse)
+		return
+	}
+
+	var root trees.Dir
+	if x, exists := fs.Roots[r.Service]; exists {
+		root = x
+	} else {
+		root = fs.DefaultRoot
+	}
+
+	if root == nil {
+		fs.sendError(r.Tag, NoSuchService)
+		return
+	}
+
+	s := &fidState{
+		username: r.Username,
+		location: FilePath{root},
+	}
+
+	fs.fids[r.Fid] = s
+
+	qid, err := root.Qid()
+	if err != nil {
+		fs.sendError(r.Tag, err.Error())
+		return
+	}
+
+	fs.respond(r.Tag, &qp.AttachResponse{
+		Tag: r.Tag,
+		Qid: qid,
+	})
+}
+
+func (fs *FileServer) flush(r *qp.FlushRequest) {
+	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
+	fs.tagLock.Lock()
+	if _, exists := fs.tags[r.OldTag]; exists {
+		delete(fs.tags, r.OldTag)
+	}
+	fs.tagLock.Unlock()
+	fs.respond(r.Tag, &qp.FlushResponse{
+		Tag: r.Tag,
+	})
+}
+
 func (fs *FileServer) walk(r *qp.WalkRequest) {
 	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 	state, exists := fs.fids[r.Fid]
@@ -383,6 +385,7 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 
 func (fs *FileServer) open(r *qp.OpenRequest) {
 	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -423,6 +426,7 @@ func (fs *FileServer) open(r *qp.OpenRequest) {
 
 func (fs *FileServer) create(r *qp.CreateRequest) {
 	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -489,6 +493,7 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 
 func (fs *FileServer) read(r *qp.ReadRequest) {
 	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -506,7 +511,8 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 		return
 	}
 
-	count := int(fs.maxsize) - (&qp.ReadResponse{}).EncodedLength() + qp.HeaderSize
+	// We try to cap things to the negotiated maxsize
+	count := int(fs.maxsize) - (4 + int(r.Count) + qp.HeaderSize)
 	if count > int(r.Count) {
 		count = int(r.Count)
 	}
@@ -537,6 +543,7 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 
 func (fs *FileServer) write(r *qp.WriteRequest) {
 	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -574,6 +581,7 @@ func (fs *FileServer) write(r *qp.WriteRequest) {
 
 func (fs *FileServer) clunk(r *qp.ClunkRequest) {
 	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 
@@ -600,6 +608,7 @@ func (fs *FileServer) clunk(r *qp.ClunkRequest) {
 
 func (fs *FileServer) remove(r *qp.RemoveRequest) {
 	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 
@@ -643,6 +652,7 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 
 func (fs *FileServer) stat(r *qp.StatRequest) {
 	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -675,6 +685,7 @@ func (fs *FileServer) stat(r *qp.StatRequest) {
 
 func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
 	fs.fidLock.RLock()
 	defer fs.fidLock.RUnlock()
 
@@ -716,9 +727,6 @@ func (fs *FileServer) Start() error {
 			fs.dead = err
 			break
 		}
-
-		fs.addTag(m.GetTag())
-		fs.logreq(m)
 
 		switch mx := m.(type) {
 		// Basic messages

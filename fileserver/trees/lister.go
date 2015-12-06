@@ -1,9 +1,6 @@
 package trees
 
-import (
-	"bytes"
-	"errors"
-)
+import "errors"
 
 type ListOpenTree struct {
 	t      Lister
@@ -17,14 +14,15 @@ func (ot *ListOpenTree) Update() error {
 	if err != nil {
 		return err
 	}
-	buf := new(bytes.Buffer)
+	bb := make([]byte, 0, len(s)*64)
 	for _, i := range s {
-		err := i.Encode(buf)
+		b, err := i.MarshalBinary()
+		bb = append(bb, b...)
 		if err != nil {
 			return err
 		}
 	}
-	ot.buffer = buf.Bytes()
+	ot.buffer = bb
 	return nil
 }
 

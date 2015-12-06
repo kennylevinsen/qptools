@@ -11,21 +11,20 @@ import (
 )
 
 func usage() {
-	fmt.Printf(`
-	Usage: %s path UID GID address [verbosity]
-	path			Path to server
-	UID			Owning user of /
-	GID			Owning group of /
-	address		Address to bind to
-	verbosity	One of "quiet", "chatty", "loud", "obnoxious" or "debug"
+	fmt.Printf(`Usage: %s path UID GID address [verbosity]
+
+      path           Path to serve
+      UID            Owning user of /
+      GID            Owning group of /
+      address        Address to bind to
+      verbosity      One of "quiet", "chatty", "loud", "obnoxious" or "debug"
 `, os.Args[0])
 }
 
 func main() {
 	if len(os.Args) < 5 {
 		fmt.Printf("Too few arguments\n")
-		fmt.Printf("%s path UID GID address\n", os.Args[0])
-		fmt.Printf("UID and GID are the user/group that owns /\n")
+		usage()
 		return
 	}
 

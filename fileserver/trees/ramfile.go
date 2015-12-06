@@ -66,13 +66,23 @@ func (of *RAMOpenFile) Write(p []byte) (int, error) {
 		return 0, errors.New("file not open")
 	}
 
+	of.f.Lock()
+	defer of.f.Unlock()
+
 	// TODO(kl): handle append-only
 	wlen := int64(len(p))
+	l := int(wlen + of.offset)
 
-	if wlen+of.offset > int64(len(of.f.content)) {
-		b := make([]byte, wlen+of.offset)
+	if l > cap(of.f.content) {
+		c := l * 2
+		if l < 10240 {
+			c = 10240
+		}
+		b := make([]byte, l, c)
 		copy(b, of.f.content[:of.offset])
 		of.f.content = b
+	} else if l > len(of.f.content) {
+		of.f.content = of.f.content[:l]
 	}
 
 	copy(of.f.content[of.offset:], p)

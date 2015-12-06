@@ -8,19 +8,25 @@ import (
 
 	"github.com/joushou/qptools/fileserver"
 	"github.com/joushou/qptools/fileserver/trees"
+
+	"net/http"
+	_ "net/http/pprof"
 )
 
 func usage() {
-	fmt.Printf(`
-	Usage: %s UID GID address [verbosity]
-	UID			Owning user of /
-	GID			Owning group of /
-	address		Address to bind to
-	verbosity	One of "quiet", "chatty", "loud", "obnoxious" or "debug"
+	fmt.Printf(`Usage: %s UID GID address [verbosity]
+
+      UID            Owning user of /
+      GID            Owning group of /
+      address        Address to bind to
+      verbosity      One of "quiet", "chatty", "loud", "obnoxious" or "debug"
 `, os.Args[0])
 }
 
 func main() {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	if len(os.Args) < 4 {
 		fmt.Printf("Too few arguments\n")
 		usage()
