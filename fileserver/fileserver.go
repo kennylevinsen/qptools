@@ -509,9 +509,11 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 	}
 
 	state.RLock()
-	defer state.RUnlock()
+	open := state.open
+	mode := state.mode
+	state.RUnlock()
 
-	if state.open == nil || ((state.mode&3 != qp.OREAD) && (state.mode&3 != qp.ORDWR)) {
+	if open == nil || ((mode&3 != qp.OREAD) && (mode&3 != qp.ORDWR)) {
 		fs.sendError(r.Tag, NotOpenForRead)
 		return
 	}
@@ -524,13 +526,13 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 
 	b := make([]byte, count)
 
-	_, err := state.open.Seek(int64(r.Offset), 0)
+	_, err := open.Seek(int64(r.Offset), 0)
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return
 	}
 
-	n, err := state.open.Read(b)
+	n, err := open.Read(b)
 	if err == io.EOF {
 		n = 0
 	} else if err != nil {
@@ -560,20 +562,22 @@ func (fs *FileServer) write(r *qp.WriteRequest) {
 	}
 
 	state.RLock()
-	defer state.RUnlock()
+	open := state.open
+	mode := state.mode
+	state.RUnlock()
 
-	if state.open == nil || ((state.mode&3 != qp.OWRITE) && (state.mode&3 != qp.ORDWR)) {
+	if open == nil || ((mode&3 != qp.OWRITE) && (mode&3 != qp.ORDWR)) {
 		fs.sendError(r.Tag, NotOpenForWrite)
 		return
 	}
 
-	_, err := state.open.Seek(int64(r.Offset), 0)
+	_, err := open.Seek(int64(r.Offset), 0)
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return
 	}
 
-	n, err := state.open.Write(r.Data)
+	n, err := open.Write(r.Data)
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return
@@ -670,9 +674,9 @@ func (fs *FileServer) stat(r *qp.StatRequest) {
 	}
 
 	state.RLock()
-	defer state.RUnlock()
-
 	l := state.location.Current()
+	state.RUnlock()
+
 	if l == nil {
 		fs.sendError(r.Tag, NoSuchFile)
 		return
@@ -741,9 +745,9 @@ func (fs *FileServer) Start() error {
 		case *qp.VersionRequest:
 			fs.version(mx)
 		case *qp.AuthRequest:
-			go fs.auth(mx)
+			fs.auth(mx)
 		case *qp.AttachRequest:
-			go fs.attach(mx)
+			fs.attach(mx)
 		case *qp.FlushRequest:
 			fs.flush(mx)
 		case *qp.WalkRequest:
