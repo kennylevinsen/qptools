@@ -107,7 +107,7 @@ func (c *Client) Tag() (qp.Tag, error) {
 	}
 
 	// We can fail this check if the only valid tag was qp.NOTAG.
-	if !exists {
+	if exists {
 		return 0, ErrTagPoolDepleted
 	}
 
