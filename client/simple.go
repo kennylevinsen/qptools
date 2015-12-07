@@ -1,7 +1,7 @@
 package client
 
 import (
-	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -256,6 +256,53 @@ func (c *SimpleClient) clunk(fid qp.Fid) {
 	})
 }
 
+func (c *SimpleClient) ReadSome(file string, offset uint64) ([]byte, error) {
+	fid, _, err := c.walkTo(file)
+	if err != nil {
+		return nil, err
+	}
+	defer c.clunk(fid)
+
+	t, err := c.c.Tag()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.c.Send(&qp.OpenRequest{
+		Tag:  t,
+		Fid:  fid,
+		Mode: qp.OREAD,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err = toError(resp); err != nil {
+		return nil, err
+	}
+
+	t, err = c.c.Tag()
+	if err != nil {
+		return nil, err
+	}
+	resp, err = c.c.Send(&qp.ReadRequest{
+		Tag:    t,
+		Fid:    fid,
+		Offset: offset,
+		Count:  c.maxSize - 9, // The size of a response
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err = toError(resp); err != nil {
+		return nil, err
+	}
+	rresp, ok := resp.(*qp.ReadResponse)
+	if !ok {
+		return nil, ErrWeirdResponse
+	}
+
+	return rresp.Data, nil
+}
+
 func (c *SimpleClient) Read(file string) ([]byte, error) {
 	fid, _, err := c.walkTo(file)
 	if err != nil {
@@ -336,13 +383,14 @@ func (c *SimpleClient) List(file string) ([]string, error) {
 		return nil, err
 	}
 
-	buf := bytes.NewBuffer(b)
 	var strs []string
-	for buf.Len() > 0 {
+	for len(b) > 0 {
 		x := &qp.Stat{}
-		if err := x.Decode(buf); err != nil {
+		l := binary.LittleEndian.Uint16(b[0:2])
+		if err := x.UnmarshalBinary(b); err != nil {
 			return nil, err
 		}
+		b = b[l+2:]
 		if x.Mode&qp.DMDIR == 0 {
 			strs = append(strs, x.Name)
 		} else {

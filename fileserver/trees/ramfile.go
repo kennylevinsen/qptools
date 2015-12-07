@@ -11,14 +11,15 @@ import (
 type RAMOpenFile struct {
 	offset int64
 	f      *RAMFile
+	user   string
 }
 
 func (of *RAMOpenFile) Seek(offset int64, whence int) (int64, error) {
+	of.f.RLock()
+	defer of.f.RUnlock()
 	if of.f == nil {
 		return 0, errors.New("file not open")
 	}
-	of.f.RLock()
-	defer of.f.RUnlock()
 	length := int64(len(of.f.content))
 	switch whence {
 	case 0:
@@ -44,11 +45,11 @@ func (of *RAMOpenFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (of *RAMOpenFile) Read(p []byte) (int, error) {
+	of.f.RLock()
+	defer of.f.RUnlock()
 	if of.f == nil {
 		return 0, errors.New("file not open")
 	}
-	of.f.RLock()
-	defer of.f.RUnlock()
 	maxRead := int64(len(p))
 	remaining := int64(len(of.f.content)) - of.offset
 	if maxRead > remaining {
@@ -62,12 +63,11 @@ func (of *RAMOpenFile) Read(p []byte) (int, error) {
 }
 
 func (of *RAMOpenFile) Write(p []byte) (int, error) {
+	of.f.Lock()
+	defer of.f.Unlock()
 	if of.f == nil {
 		return 0, errors.New("file not open")
 	}
-
-	of.f.Lock()
-	defer of.f.Unlock()
 
 	// TODO(kl): handle append-only
 	wlen := int64(len(p))
@@ -90,6 +90,7 @@ func (of *RAMOpenFile) Write(p []byte) (int, error) {
 	of.offset += wlen
 	of.f.mtime = time.Now()
 	of.f.atime = of.f.mtime
+	of.f.muser = of.user
 	of.f.version++
 	return int(wlen), nil
 }
@@ -165,8 +166,8 @@ func (f *RAMFile) Stat() (qp.Stat, error) {
 		Name:   n,
 		Length: uint64(len(f.content)),
 		UID:    f.user,
-		GID:    f.user,
-		MUID:   f.user,
+		GID:    f.group,
+		MUID:   f.muser,
 		Atime:  uint32(f.atime.Unix()),
 		Mtime:  uint32(f.mtime.Unix()),
 	}, nil
@@ -178,13 +179,15 @@ func (f *RAMFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 		return nil, errors.New("access denied")
 	}
 
-	f.atime = time.Now()
-
 	f.Lock()
 	defer f.Unlock()
+	f.atime = time.Now()
 	f.opens++
 
-	return &RAMOpenFile{f: f}, nil
+	return &RAMOpenFile{
+		f:    f,
+		user: user,
+	}, nil
 }
 
 func (f *RAMFile) IsDir() (bool, error) {

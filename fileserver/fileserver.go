@@ -354,9 +354,11 @@ func (fs *FileServer) flush(r *qp.FlushRequest) {
 func (fs *FileServer) walk(r *qp.WalkRequest) {
 	fs.addTag(r.Tag)
 	fs.logreq(r.Tag, r)
+
 	fs.fidLock.Lock()
-	defer fs.fidLock.Unlock()
 	state, exists := fs.fids[r.Fid]
+	fs.fidLock.Unlock()
+
 	if !exists {
 		fs.sendError(r.Tag, UnknownFid)
 		return
@@ -386,10 +388,11 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 func (fs *FileServer) open(r *qp.OpenRequest) {
 	fs.addTag(r.Tag)
 	fs.logreq(r.Tag, r)
-	fs.fidLock.RLock()
-	defer fs.fidLock.RUnlock()
 
+	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
+	fs.fidLock.RUnlock()
+
 	if !exists {
 		fs.sendError(r.Tag, UnknownFid)
 		return
@@ -427,10 +430,11 @@ func (fs *FileServer) open(r *qp.OpenRequest) {
 func (fs *FileServer) create(r *qp.CreateRequest) {
 	fs.addTag(r.Tag)
 	fs.logreq(r.Tag, r)
-	fs.fidLock.RLock()
-	defer fs.fidLock.RUnlock()
 
+	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
+	fs.fidLock.RUnlock()
+
 	if !exists {
 		fs.sendError(r.Tag, UnknownFid)
 		return
@@ -494,10 +498,11 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 func (fs *FileServer) read(r *qp.ReadRequest) {
 	fs.addTag(r.Tag)
 	fs.logreq(r.Tag, r)
-	fs.fidLock.RLock()
-	defer fs.fidLock.RUnlock()
 
+	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
+	fs.fidLock.RUnlock()
+
 	if !exists {
 		fs.sendError(r.Tag, UnknownFid)
 		return
@@ -512,7 +517,7 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 	}
 
 	// We try to cap things to the negotiated maxsize
-	count := int(fs.maxsize) - (4 + int(r.Count) + qp.HeaderSize)
+	count := int(fs.maxsize) - (4 + qp.HeaderSize)
 	if count > int(r.Count) {
 		count = int(r.Count)
 	}
@@ -544,10 +549,11 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 func (fs *FileServer) write(r *qp.WriteRequest) {
 	fs.addTag(r.Tag)
 	fs.logreq(r.Tag, r)
-	fs.fidLock.RLock()
-	defer fs.fidLock.RUnlock()
 
+	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
+	fs.fidLock.RUnlock()
+
 	if !exists {
 		fs.sendError(r.Tag, UnknownFid)
 		return
@@ -653,10 +659,11 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 func (fs *FileServer) stat(r *qp.StatRequest) {
 	fs.addTag(r.Tag)
 	fs.logreq(r.Tag, r)
-	fs.fidLock.RLock()
-	defer fs.fidLock.RUnlock()
 
+	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
+	fs.fidLock.RUnlock()
+
 	if !exists {
 		fs.sendError(r.Tag, UnknownFid)
 		return
@@ -686,10 +693,11 @@ func (fs *FileServer) stat(r *qp.StatRequest) {
 func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 	fs.addTag(r.Tag)
 	fs.logreq(r.Tag, r)
-	fs.fidLock.RLock()
-	defer fs.fidLock.RUnlock()
 
+	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
+	fs.fidLock.RUnlock()
+
 	if !exists {
 		fs.sendError(r.Tag, UnknownFid)
 		return
