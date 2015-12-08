@@ -392,7 +392,7 @@ func (c *SimpleClient) Write(content []byte, file string) error {
 	return c.writeAll(fid, content)
 }
 
-func (c *SimpleClient) List(file string) ([]string, error) {
+func (c *SimpleClient) List(file string) ([]qp.Stat, error) {
 	fid, _, err := c.walkTo(file)
 	if err != nil {
 		return nil, err
@@ -420,22 +420,18 @@ func (c *SimpleClient) List(file string) ([]string, error) {
 		return nil, err
 	}
 
-	var strs []string
+	var stats []qp.Stat
 	for len(b) > 0 {
-		x := &qp.Stat{}
+		x := qp.Stat{}
 		l := binary.LittleEndian.Uint16(b[0:2])
-		if err := x.UnmarshalBinary(b); err != nil {
+		if err := x.UnmarshalBinary(b[0 : 2+l]); err != nil {
 			return nil, err
 		}
-		b = b[l+2:]
-		if x.Mode&qp.DMDIR == 0 {
-			strs = append(strs, x.Name)
-		} else {
-			strs = append(strs, x.Name+"/")
-		}
+		b = b[2+l:]
+		stats = append(stats, x)
 	}
 
-	return strs, nil
+	return stats, nil
 }
 
 func (c *SimpleClient) Create(name string, directory bool) error {
