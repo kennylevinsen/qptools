@@ -1,11 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/chzyer/readline"
+	"github.com/joushou/qp"
 	"github.com/joushou/qptools/client"
 )
 
@@ -27,71 +31,168 @@ func main() {
 		return
 	}
 
-	var cmds map[string]func(string)
-	cmds = map[string]func(string){
-		"ls": func(s string) {
-			if s == "" {
-				s = "/"
+	cwd := "/"
+
+	var cmds map[string]func(string) error
+	cmds = map[string]func(string) error{
+		"ls": func(s string) error {
+			if !(len(s) > 0 && s[0] == '/') {
+				s = path.Join(cwd, s)
 			}
 			strs, err := c.List(s)
 			if err != nil {
-				fmt.Printf("ls failed: %v\n", err)
-				return
+				return err
 			}
-			fmt.Printf("%v\n", strs)
+			for _, str := range strs {
+				fmt.Printf("%s ", str)
+			}
+			fmt.Printf("\n")
+			return nil
 		},
-		"cat": func(s string) {
+		"cd": func(s string) error {
+			if !(len(s) > 0 && s[0] == '/') {
+				s = path.Join(cwd, s)
+			}
+			stat, err := c.Stat(s)
+			if err != nil {
+				return err
+			}
+			if stat.Mode&qp.DMDIR == 0 {
+				return errors.New("file is not a directory")
+			}
+			cwd = s
+			return nil
+		},
+		"pwd": func(string) error {
+			fmt.Printf("%s\n", cwd)
+			return nil
+		},
+		"cat": func(s string) error {
+			if !(len(s) > 0 && s[0] == '/') {
+				s = path.Join(cwd, s)
+			}
 			strs, err := c.Read(s)
 			if err != nil {
-				fmt.Printf("cat failed: %v\n", err)
-				return
+				return err
 			}
-			fmt.Printf("%s\n", strs)
+			fmt.Printf("Showing content of %s\n%s\n", s, strs)
+			return nil
 		},
-		"monitor": func(s string) {
+		"monitor": func(s string) error {
+			if !(len(s) > 0 && s[0] == '/') {
+				s = path.Join(cwd, s)
+			}
 			var off uint64
 			for {
 				strs, err := c.ReadSome(s, off)
 				if err != nil {
-					fmt.Printf("monitor failed: %v\n", err)
-					return
+					return err
 				}
 				off += uint64(len(strs))
 				fmt.Printf("%s", strs)
 			}
+			return nil
 		},
-		"get": func(string) {
-			fmt.Printf("get is not yet implemented\n")
+		"get": func(s string) error {
+			if !(len(s) > 0 && s[0] == '/') {
+				s = path.Join(cwd, s)
+			}
+			target := path.Base(s)
+			f, err := os.Create(target)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Checking: %s", s)
+			stat, err := c.Stat(s)
+			if err != nil {
+				return err
+			}
+			if stat.Mode&qp.DMDIR != 0 {
+				return errors.New("file is a directory")
+			}
+			fmt.Printf(" - Done.\n")
+
+			fmt.Printf("Downloading: %s to %s [%dB]", s, target, stat.Length)
+			strs, err := c.Read(s)
+			if err != nil {
+				return err
+			}
+			fmt.Printf(" - Downloaded %dB.\n", len(strs))
+			fmt.Printf("Writing data to %s", s)
+			for len(strs) > 0 {
+				n, err := f.Write(strs)
+				if err != nil {
+					return err
+				}
+				strs = strs[n:]
+			}
+			fmt.Printf(" - Done.\n")
+
+			return nil
 		},
-		"put": func(string) {
-			fmt.Printf("put is not yet implemented\n")
+		"put": func(s string) error {
+			target := path.Join(cwd, path.Base(s))
+
+			strs, err := ioutil.ReadFile(s)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Checking: %s", target)
+			stat, err := c.Stat(target)
+			if err != nil {
+				fmt.Printf(" - File does not exist.\n")
+				fmt.Printf("Creating file: %s", target)
+				err := c.Create(target, false)
+				if err != nil {
+					return err
+				}
+			}
+			if stat.Mode&qp.DMDIR != 0 {
+				return errors.New("file is a directory")
+			}
+
+			fmt.Printf(" - Done.\n")
+
+			fmt.Printf("Uploading: %s to %s [%dB]", s, target, len(strs))
+			err = c.Write(strs, target)
+			if err != nil {
+				return err
+			}
+			fmt.Printf(" - Done.\n")
+			return nil
 		},
-		"mkdir": func(s string) {
+		"mkdir": func(s string) error {
+			if !(len(s) > 0 && s[0] == '/') {
+				s = path.Join(cwd, s)
+			}
 			err := c.Create(s, true)
 			if err != nil {
-				fmt.Printf("mkdir failed: %v\n", err)
-				return
+				return err
 			}
+			return nil
 		},
-		"rm": func(s string) {
+		"rm": func(s string) error {
+			if !(len(s) > 0 && s[0] == '/') {
+				s = path.Join(cwd, s)
+			}
 			err := c.Remove(s)
 			if err != nil {
-				fmt.Printf("rm failed: %v\n", err)
-				return
+				return err
 			}
+			return nil
 		},
-		"chmod": func(string) {
-			fmt.Printf("chmod is not yet implemented\n")
-		},
-		"quit": func(string) {
+		"quit": func(string) error {
 			fmt.Printf("bye\n")
 			loop = false
+			return nil
 		},
-		"help": func(string) {
+		"help": func(string) error {
 			fmt.Printf("Available commands: \n")
 			for k := range cmds {
 				fmt.Printf("\t%s\n", k)
 			}
+			return nil
 		},
 	}
 
@@ -132,6 +233,9 @@ func main() {
 			fmt.Printf("no such command: [%s]\n", cmd)
 			continue
 		}
-		f(args)
+		err = f(args)
+		if err != nil {
+			fmt.Printf("\ncommand %s failed: %v\n", cmd, err)
+		}
 	}
 }
