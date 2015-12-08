@@ -13,16 +13,34 @@ import (
 	"github.com/joushou/qptools/client"
 )
 
+func usage() {
+	fmt.Printf(`qptools 9P cli
+
+Usage: %s address user [service]
+
+    address     The address to connect to.
+    user        The user to connect as.
+    service     The service to request (defaults to "").
+
+Example: %s localhost:9999 glenda
+
+`, os.Args[0], os.Args[0])
+}
+
 func main() {
 	loop := true
-	if len(os.Args) < 4 {
+	if len(os.Args) < 3 {
 		fmt.Printf("Too few arguments\n")
+		usage()
 		return
 	}
 
 	addr := os.Args[1]
 	user := os.Args[2]
-	service := os.Args[3]
+	service := ""
+	if len(os.Args) > 3 {
+		service = os.Args[3]
+	}
 
 	c := &client.SimpleClient{}
 	err := c.Dial("tcp", addr, user, service)
