@@ -29,7 +29,15 @@ const (
 	NotOpenForWrite  = "file not opened for writing"
 )
 
-// Verbosity is the verbosity level
+const (
+	// The maximum negotiable message size.
+	MaxSize = 10 * 1024 * 1024
+
+	// The minimum size that will be accepted.
+	MinSize = 128
+)
+
+// Verbosity is the verbosity level of the server.
 type Verbosity int
 
 const (
@@ -40,8 +48,14 @@ const (
 	Debug
 )
 
+// fidState is the internal state associated with a fid.
 type fidState struct {
+	// It is important that the lock is only hold during the immediate
+	// manipulation of the state. That also includes the read lock. Holding it for
+	// the full duration of a potentially blocking call such as read/write will
+	// lead to unwanted queueing of requests, including Flush and Clunk.
 	sync.RWMutex
+
 	location FilePath
 
 	open     trees.OpenFile
@@ -61,6 +75,12 @@ type FileServer struct {
 	p         qp.Protocol
 	dead      error
 
+	// It is important that the locks below are only held during the immediate
+	// manipulation of the maps they are associated with. That also includes
+	// the read locks. Holding it for the full duration of a potentially
+	// blocking call such as read/write will lead to unwanted queueing of
+	// requests, including Flush and Clunk.
+
 	// session data
 	maxsize uint32
 	fids    map[qp.Fid]*fidState
@@ -69,6 +89,7 @@ type FileServer struct {
 	tagLock sync.Mutex
 }
 
+// cleanup handles post-execution cleanup.
 func (fs *FileServer) cleanup() {
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
@@ -81,6 +102,7 @@ func (fs *FileServer) cleanup() {
 	}
 }
 
+// logreq prints the request, formatted after the verbosity level.
 func (fs *FileServer) logreq(t qp.Tag, m qp.Message) {
 	switch fs.Verbosity {
 	case Chatty, Loud:
@@ -90,6 +112,7 @@ func (fs *FileServer) logreq(t qp.Tag, m qp.Message) {
 	}
 }
 
+// logresp prints the response, formatted after the verbosity level.
 func (fs *FileServer) logresp(t qp.Tag, m qp.Message) {
 	switch fs.Verbosity {
 	case Loud:
@@ -107,41 +130,57 @@ func (fs *FileServer) sendError(t qp.Tag, str string) {
 	fs.respond(t, e)
 }
 
+// respond sends a response if the tag is still queued. The tag is removed
+// immediately after checking its existence. It marks the fileserver as broken
+// on error by setting fs.dead to the error, which must break the server loop.
 func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
+	// We're holding writeLock during the full duration of respond in order to
+	// ensure that flush handling cannot end up sending an Rflush for the tag.
+	// If writeLock was only held during write, and tagLock was only held
+	// during tag map access, an Rflush could end up being sent in between
+	// those two locks, breaking flush protocol, which guarantees that a tag is
+	// immediately reusable after an Rflush for it has been received.
+	fs.writeLock.Lock()
+	defer fs.writeLock.Unlock()
+
 	fs.tagLock.Lock()
-	defer fs.tagLock.Unlock()
 	_, tagPresent := fs.tags[t]
 
 	if t != qp.NOTAG && !tagPresent {
+		fs.tagLock.Unlock()
 		return
 	}
 
 	delete(fs.tags, t)
+	fs.tagLock.Unlock()
 
-	/* maxsize conformance temporarily disabled.
-	l := uint32(m.EncodedLength())
-	if l > fs.maxsize {
-		if mx, ok := m.(*qp.ErrorResponse); ok {
-			diff := l - fs.maxsize
-			mx.Error = mx.Error[:uint32(len(mx.Error))-diff]
-		} else {
-			m = &qp.ErrorResponse{
-				Tag:   t,
-				Error: ResponseTooLong,
+	/*
+		MaxSize conformance temporarily disabled, due to removal of EncodedLength.
+
+		l := uint32(m.EncodedLength())
+		if l > fs.maxsize {
+			if mx, ok := m.(*qp.ErrorResponse); ok {
+				diff := l - fs.maxsize
+				mx.Error = mx.Error[:uint32(len(mx.Error))-diff]
+			} else {
+				m = &qp.ErrorResponse{
+					Tag:   t,
+					Error: ResponseTooLong,
+				}
 			}
 		}
-	}*/
+	*/
 
 	fs.logresp(t, m)
 
-	fs.writeLock.Lock()
-	defer fs.writeLock.Unlock()
 	err := fs.p.Encode(fs.RW, m)
 	if err != nil {
 		fs.dead = err
 	}
 }
 
+// addTag registers a tag as a pending request. Removing the tag prior to its
+// response being processed results in the response not being sent.
 func (fs *FileServer) addTag(t qp.Tag) error {
 	if t == qp.NOTAG {
 		return nil
@@ -157,15 +196,24 @@ func (fs *FileServer) addTag(t qp.Tag) error {
 	return nil
 }
 
+// walkTo handles the walking logic. It is isolated to make implementation of
+// .e with its additional walk-performing requests simpler.
 func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
+	// We could theoretically release the state lock after copying the content,
+	// which might be saner due to Open or Walk on the files potentially
+	// blocking, but we are currently holding the lock during the full walk for
+	// simplicity.
 	state.Lock()
 	defer state.Unlock()
 
 	if state.open != nil {
+		// Can't walk on an open fid.
 		return nil, nil, errors.New(FidOpen)
 	}
 
 	if len(names) == 0 {
+		// A 0-length walk is equivalent to walking to ".", which effectively
+		// just clones the fid.
 		x := &fidState{
 			username: state.username,
 			location: state.location,
@@ -176,17 +224,25 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 	cur := state.location.Current()
 	isdir, err := cur.IsDir()
 	if err != nil {
+		// Yes, checking if the file is a directory can fail if the file is
+		// backed to disk.
 		return nil, nil, err
 	}
+
 	if !isdir {
+		// NOTE(kl): Isn't a walk to "." legal on a file? Pretty sure this check
+		// should just be killed.
 		return nil, nil, errors.New(FidNotDirectory)
 	}
 
 	root := cur
-	newloc := state.location
+	newloc := state.location.Clone()
 	first := true
 	var qids []qp.Qid
 	for i := range names {
+		// We open the file to check permissions, as walking would otherwise not
+		// necessarily require OEXEC permissions. This is a bit ugly and an
+		// unnecessarily high amount of work.
 		x, err := root.Open(state.username, qp.OEXEC)
 		if err != nil {
 			goto done
@@ -197,29 +253,46 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 		name := names[i]
 		switch name {
 		case ".":
+			// This always succeeds, but we don't want to add it to our location
+			// list.
 			addToLoc = false
 		case "..":
+			// This also always succeeds, and is either does nothing or shortens
+			// our location list. We don't want anything added to the list
+			// regardless.
+			addToLoc = false
 			root = newloc.Parent()
 			if len(newloc) > 1 {
 				newloc = newloc[:len(newloc)-1]
-				addToLoc = false
 			}
 		default:
+			// A regular file name. In this case, walking to the name is only
+			// legal if the current file is a directory.
 			isdir, err = root.IsDir()
 			if err != nil {
 				return nil, nil, err
 			}
+
 			if !isdir {
+				// Root isn't a dir, so we can't walk.
+				if first {
+					return nil, nil, errors.New(FidNotDirectory)
+				}
 				goto done
 			}
 
 			d := root.(trees.Dir)
 			root, err = d.Walk(state.username, name)
 			if err != nil {
+				if first {
+					return nil, nil, err
+				}
+				// The walk failed for some arbitrary reason.
 				goto done
 			}
 
 			if root == nil {
+				// The file did not exist
 				if first {
 					return nil, nil, errors.New(NoSuchFile)
 				}
@@ -256,17 +329,25 @@ done:
 
 func (fs *FileServer) version(r *qp.VersionRequest) {
 	fs.logreq(r.Tag, r)
+
+	versionstr := r.Version
 	maxsize := r.MaxSize
-	if maxsize > 1024*1024*10 {
-		maxsize = 1024 * 1024 * 10
+	if maxsize > MaxSize {
+		maxsize = MaxSize
 	} else if maxsize < 128 {
 		// This makes no sense. Try to force the client up a bit.
+		// NOTE(kl): Should we rather just return an unknown version response?
 		maxsize = 128
 	}
 
 	fs.maxsize = maxsize
 
-	versionstr := r.Version
+	// We change the protocol codec here if necessary. This only works because
+	// the server loop is currently blocked. Had it continued ahead, blocking
+	// in its Decode call again, we would only be able to change the protocol
+	// for the next-next request. This would be an issue for .u, which change
+	// the Tattach message, as well as for .e, which might start a use Tsession
+	// immediately after our Rversion.
 	switch versionstr {
 	// case qp.VersionDote:
 	// 	fs.p = qp.NineP2000Dote
@@ -277,7 +358,7 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 		versionstr = qp.UnknownVersion
 	}
 
-	// VersionRequest resets everything
+	// Tversion resets everything
 	fs.cleanup()
 	fs.fids = make(map[qp.Fid]*fidState)
 	fs.tags = make(map[qp.Tag]bool)
@@ -290,6 +371,9 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 	})
 }
 
+// auth currently just sends an error to inform the client that auth is not
+// required. In the near future, it should allow external implementation of an
+// auth algo, exposed through the file abstraction.
 func (fs *FileServer) auth(r *qp.AuthRequest) {
 	fs.addTag(r.Tag)
 	fs.logreq(r.Tag, r)

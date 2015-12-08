@@ -25,6 +25,14 @@ func (fp FilePath) Parent() trees.File {
 	return fp[len(fp)-2]
 }
 
+func (fp FilePath) Clone() FilePath {
+	n := make(FilePath, len(fp))
+	for i := range fp {
+		n[i] = fp[i]
+	}
+	return n
+}
+
 func setStat(user string, e trees.File, parent trees.Dir, nstat qp.Stat) error {
 	ostat, err := e.Stat()
 	if err != nil {
