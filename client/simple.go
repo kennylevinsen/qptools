@@ -166,6 +166,11 @@ func (c *SimpleClient) writeAll(fid qp.Fid, data []byte) error {
 		if len(data[offset:]) < count {
 			count = len(data[offset:])
 		}
+
+		if count == 0 {
+			break
+		}
+
 		t, err := c.c.Tag()
 		if err != nil {
 			return err
@@ -254,6 +259,38 @@ func (c *SimpleClient) clunk(fid qp.Fid) {
 		Tag: t,
 		Fid: fid,
 	})
+}
+
+func (c *SimpleClient) Stat(file string) (qp.Stat, error) {
+	fid, _, err := c.walkTo(file)
+	if err != nil {
+		return qp.Stat{}, err
+	}
+	defer c.clunk(fid)
+
+	t, err := c.c.Tag()
+	if err != nil {
+		return qp.Stat{}, err
+	}
+
+	resp, err := c.c.Send(&qp.StatRequest{
+		Tag: t,
+		Fid: fid,
+	})
+
+	if err != nil {
+		return qp.Stat{}, err
+	}
+	if err = toError(resp); err != nil {
+		return qp.Stat{}, err
+	}
+
+	sresp, ok := resp.(*qp.StatResponse)
+	if !ok {
+		return qp.Stat{}, ErrWeirdResponse
+	}
+
+	return sresp.Stat, nil
 }
 
 func (c *SimpleClient) ReadSome(file string, offset uint64) ([]byte, error) {
