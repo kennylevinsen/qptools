@@ -33,6 +33,23 @@ func main() {
 
 	cwd := "/"
 
+	confirmation, err := readline.New("")
+	confirm := func(s string) bool {
+		confirmation.SetPrompt(fmt.Sprintf("%s [y]es, [n]o: ", s))
+		l, err := confirmation.Readline()
+		if err != nil {
+			return false
+		}
+
+		switch l {
+		default:
+			fmt.Printf("Aborting\n")
+			return false
+		case "y", "yes":
+			return true
+		}
+	}
+
 	var cmds map[string]func(string) error
 	cmds = map[string]func(string) error{
 		"ls": func(s string) error {
@@ -140,19 +157,22 @@ func main() {
 			}
 			fmt.Printf("Checking: %s", target)
 			stat, err := c.Stat(target)
+			fmt.Printf(" - Done.\n")
 			if err != nil {
-				fmt.Printf(" - File does not exist.\n")
-				fmt.Printf("Creating file: %s", target)
+				fmt.Printf("File does not exist. Creating file: %s", target)
 				err := c.Create(target, false)
 				if err != nil {
 					return err
+				}
+				fmt.Printf(" - Done.\n")
+			} else {
+				if !confirm("File exists. Do you want to overwrite it?") {
+					return nil
 				}
 			}
 			if stat.Mode&qp.DMDIR != 0 {
 				return errors.New("file is a directory")
 			}
-
-			fmt.Printf(" - Done.\n")
 
 			fmt.Printf("Uploading: %s to %s [%dB]", s, target, len(strs))
 			err = c.Write(strs, target)
@@ -166,21 +186,19 @@ func main() {
 			if !(len(s) > 0 && s[0] == '/') {
 				s = path.Join(cwd, s)
 			}
-			err := c.Create(s, true)
-			if err != nil {
-				return err
-			}
-			return nil
+			return c.Create(s, true)
 		},
 		"rm": func(s string) error {
 			if !(len(s) > 0 && s[0] == '/') {
 				s = path.Join(cwd, s)
 			}
-			err := c.Remove(s)
-			if err != nil {
-				return err
+
+			if !confirm(fmt.Sprintf("Are you sure you want to delete %s?", s)) {
+				return nil
 			}
-			return nil
+
+			fmt.Printf("Deleting %s\n", s)
+			return c.Remove(s)
 		},
 		"quit": func(string) error {
 			fmt.Printf("bye\n")
