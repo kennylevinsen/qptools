@@ -27,6 +27,22 @@ Example: %s localhost:9999 glenda
 `, os.Args[0], os.Args[0])
 }
 
+func permToString(m qp.FileMode) string {
+	x := []byte("drwxrwxrwx")
+	if m&qp.DMDIR == 0 {
+		x[0] = '-'
+	}
+
+	m = m & 0777
+	for idx := uint(0); idx < 9; idx++ {
+
+		if m&(1<<(8-idx)) == 0 {
+			x[idx+1] = '-'
+		}
+	}
+	return string(x)
+}
+
 func main() {
 	loop := true
 	if len(os.Args) < 3 {
@@ -74,14 +90,44 @@ func main() {
 			if !(len(s) > 0 && s[0] == '/') {
 				s = path.Join(cwd, s)
 			}
-			strs, err := c.List(s)
+			stats, err := c.List(s)
 			if err != nil {
 				return err
 			}
-			for _, str := range strs {
-				fmt.Printf("%s ", str)
+
+			// Sort the stats
+			var sortedstats []qp.Stat
+			selectedstat := -1
+			for len(stats) > 0 {
+				for i := range stats {
+					if selectedstat == -1 {
+						selectedstat = i
+						continue
+					}
+					isfile1 := stats[i].Mode&qp.DMDIR == 0
+					isfile2 := stats[selectedstat].Mode&qp.DMDIR == 0
+					if isfile1 && !isfile2 {
+						continue
+					}
+
+					if !isfile1 && isfile2 {
+						selectedstat = i
+						continue
+					}
+
+					if stats[i].Name < stats[selectedstat].Name {
+						selectedstat = i
+						continue
+					}
+				}
+				sortedstats = append(sortedstats, stats[selectedstat])
+				stats = append(stats[:selectedstat], stats[selectedstat+1:]...)
+				selectedstat = -1
 			}
-			fmt.Printf("\n")
+
+			for _, stat := range sortedstats {
+				fmt.Printf("%s\t%8d\t%s\n", permToString(stat.Mode), stat.Length, stat.Name)
+			}
 			return nil
 		},
 		"cd": func(s string) error {
