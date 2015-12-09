@@ -8,10 +8,40 @@ import (
 	"path"
 	"strings"
 
+	"gopkg.in/alecthomas/kingpin.v2"
+
 	"github.com/chzyer/readline"
 	"github.com/joushou/qp"
 	"github.com/joushou/qptools/client"
 )
+
+var (
+	service = kingpin.Flag("service", "service name to use when connecting (aname)").Short('s').String()
+	user    = kingpin.Flag("user", "username to use when connecting (uname)").Short('u').String()
+	address = kingpin.Arg("address", "address to connect to").Required().String()
+	command = StringList(kingpin.Arg("command", "command to execute (disables interactive mode)"))
+)
+
+type slist []string
+
+func (i *slist) Set(value string) error {
+	*i = append(*i, value)
+	return nil
+}
+
+func (i *slist) String() string {
+	return ""
+}
+
+func (i *slist) IsCumulative() bool {
+	return true
+}
+
+func StringList(s kingpin.Settings) (target *[]string) {
+	target = new([]string)
+	s.SetValue((*slist)(target))
+	return
+}
 
 func usage() {
 	fmt.Printf(`qptools 9P cli
@@ -44,28 +74,14 @@ func permToString(m qp.FileMode) string {
 }
 
 func main() {
-	loop := true
-	if len(os.Args) < 3 {
-		fmt.Printf("Too few arguments\n")
-		usage()
-		return
-	}
-
-	addr := os.Args[1]
-	user := os.Args[2]
-	service := ""
-	if len(os.Args) > 3 {
-		service = os.Args[3]
-	}
+	kingpin.Parse()
 
 	c := &client.SimpleClient{}
-	err := c.Dial("tcp", addr, user, service)
+	err := c.Dial("tcp", *address, *user, *service)
 	if err != nil {
-		fmt.Printf("Connect failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Connect failed: %v\n", err)
 		return
 	}
-
-	cwd := "/"
 
 	confirmation, err := readline.New("")
 	confirm := func(s string) bool {
@@ -77,15 +93,16 @@ func main() {
 
 		switch l {
 		default:
-			fmt.Printf("Aborting\n")
+			fmt.Fprintf(os.Stderr, "Aborting\n")
 			return false
 		case "y", "yes":
 			return true
 		}
 	}
 
-	var cmds map[string]func(string) error
-	cmds = map[string]func(string) error{
+	cwd := "/"
+	loop := true
+	cmds := map[string]func(string) error{
 		"ls": func(s string) error {
 			if !(len(s) > 0 && s[0] == '/') {
 				s = path.Join(cwd, s)
@@ -95,38 +112,48 @@ func main() {
 				return err
 			}
 
-			// Sort the stats
+			// Sort the stats. We sort alphabetically with directories first.
 			var sortedstats []qp.Stat
 			selectedstat := -1
 			for len(stats) > 0 {
 				for i := range stats {
 					if selectedstat == -1 {
+						// Nothing was selected, so we automatically win.
 						selectedstat = i
 						continue
 					}
+
 					isfile1 := stats[i].Mode&qp.DMDIR == 0
 					isfile2 := stats[selectedstat].Mode&qp.DMDIR == 0
+
 					if isfile1 && !isfile2 {
+						// The previously selected file is a dir, and we got a file, so we lose.
 						continue
 					}
 
 					if !isfile1 && isfile2 {
+						// The previously selected file is a file, and we got a dir, so we win.
 						selectedstat = i
 						continue
 					}
 
 					if stats[i].Name < stats[selectedstat].Name {
+						// We're both of the same type, but our name as lower value, so we win.
 						selectedstat = i
 						continue
 					}
+
+					// We're not special, so we lose by default.
 				}
+
+				// Append to sorted list, cut from previous list and reset selection.
 				sortedstats = append(sortedstats, stats[selectedstat])
 				stats = append(stats[:selectedstat], stats[selectedstat+1:]...)
 				selectedstat = -1
 			}
 
 			for _, stat := range sortedstats {
-				fmt.Printf("%s\t%8d\t%s\n", permToString(stat.Mode), stat.Length, stat.Name)
+				fmt.Printf("%s  %10d  %10d  %s\n", permToString(stat.Mode), stat.Qid.Version, stat.Length, stat.Name)
 			}
 			return nil
 		},
@@ -156,13 +183,15 @@ func main() {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Showing content of %s\n%s\n", s, strs)
+			fmt.Fprintf(os.Stderr, "Showing content of %s\n", s)
+			fmt.Printf("%s", strs)
 			return nil
 		},
 		"monitor": func(s string) error {
 			if !(len(s) > 0 && s[0] == '/') {
 				s = path.Join(cwd, s)
 			}
+			fmt.Fprintf(os.Stderr, "Monitoring %s\n", s)
 			var off uint64
 			for {
 				strs, err := c.ReadSome(s, off)
@@ -184,7 +213,7 @@ func main() {
 				return err
 			}
 
-			fmt.Printf("Checking: %s", s)
+			fmt.Fprintf(os.Stderr, "Checking: %s", s)
 			stat, err := c.Stat(s)
 			if err != nil {
 				return err
@@ -192,15 +221,15 @@ func main() {
 			if stat.Mode&qp.DMDIR != 0 {
 				return errors.New("file is a directory")
 			}
-			fmt.Printf(" - Done.\n")
+			fmt.Fprintf(os.Stderr, " - Done.\n")
 
-			fmt.Printf("Downloading: %s to %s [%dB]", s, target, stat.Length)
+			fmt.Fprintf(os.Stderr, "Downloading: %s to %s [%dB]", s, target, stat.Length)
 			strs, err := c.Read(s)
 			if err != nil {
 				return err
 			}
-			fmt.Printf(" - Downloaded %dB.\n", len(strs))
-			fmt.Printf("Writing data to %s", s)
+			fmt.Fprintf(os.Stderr, " - Downloaded %dB.\n", len(strs))
+			fmt.Fprintf(os.Stderr, "Writing data to %s", s)
 			for len(strs) > 0 {
 				n, err := f.Write(strs)
 				if err != nil {
@@ -208,7 +237,7 @@ func main() {
 				}
 				strs = strs[n:]
 			}
-			fmt.Printf(" - Done.\n")
+			fmt.Fprintf(os.Stderr, " - Done.\n")
 
 			return nil
 		},
@@ -219,16 +248,16 @@ func main() {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Checking: %s", target)
+			fmt.Fprintf(os.Stderr, "Checking: %s", target)
 			stat, err := c.Stat(target)
-			fmt.Printf(" - Done.\n")
+			fmt.Fprintf(os.Stderr, " - Done.\n")
 			if err != nil {
-				fmt.Printf("File does not exist. Creating file: %s", target)
+				fmt.Fprintf(os.Stderr, "File does not exist. Creating file: %s", target)
 				err := c.Create(target, false)
 				if err != nil {
 					return err
 				}
-				fmt.Printf(" - Done.\n")
+				fmt.Fprintf(os.Stderr, " - Done.\n")
 			} else {
 				if !confirm("File exists. Do you want to overwrite it?") {
 					return nil
@@ -238,12 +267,12 @@ func main() {
 				return errors.New("file is a directory")
 			}
 
-			fmt.Printf("Uploading: %s to %s [%dB]", s, target, len(strs))
+			fmt.Fprintf(os.Stderr, "Uploading: %s to %s [%dB]", s, target, len(strs))
 			err = c.Write(strs, target)
 			if err != nil {
 				return err
 			}
-			fmt.Printf(" - Done.\n")
+			fmt.Fprintf(os.Stderr, " - Done.\n")
 			return nil
 		},
 		"mkdir": func(s string) error {
@@ -261,21 +290,35 @@ func main() {
 				return nil
 			}
 
-			fmt.Printf("Deleting %s\n", s)
+			fmt.Fprintf(os.Stderr, "Deleting %s\n", s)
 			return c.Remove(s)
 		},
 		"quit": func(string) error {
-			fmt.Printf("bye\n")
+			fmt.Fprintf(os.Stderr, "bye\n")
 			loop = false
 			return nil
 		},
-		"help": func(string) error {
-			fmt.Printf("Available commands: \n")
-			for k := range cmds {
-				fmt.Printf("\t%s\n", k)
+	}
+
+	if len(*command) > 0 {
+		args := ""
+		for i := 1; i < len(*command); i++ {
+			if i != 1 {
+				args += " "
 			}
-			return nil
-		},
+			args += (*command)[i]
+		}
+
+		f, ok := cmds[(*command)[0]]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "no such command: [%s]\n", command)
+			return
+		}
+		err = f(args)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\ncommand %s failed: %v\n", command, err)
+		}
+		return
 	}
 
 	completer := readline.NewPrefixCompleter()
@@ -289,11 +332,13 @@ func main() {
 	})
 
 	if err != nil {
-		fmt.Printf("failed to create readline: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to create readline: %v\n", err)
 		return
 	}
 
 	defer rl.Close()
+
+	fmt.Fprintf(os.Stderr, "Welcome to the qptools 9P cli.\nPress tab to see available commands.\n")
 
 	for loop {
 		line, err := rl.Readline()
@@ -312,12 +357,12 @@ func main() {
 
 		f, ok := cmds[cmd]
 		if !ok {
-			fmt.Printf("no such command: [%s]\n", cmd)
+			fmt.Fprintf(os.Stderr, "no such command: [%s]\n", cmd)
 			continue
 		}
 		err = f(args)
 		if err != nil {
-			fmt.Printf("\ncommand %s failed: %v\n", cmd, err)
+			fmt.Fprintf(os.Stderr, "\ncommand %s failed: %v\n", cmd, err)
 		}
 	}
 }
