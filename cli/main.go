@@ -185,6 +185,7 @@ func main() {
 			}
 			fmt.Fprintf(os.Stderr, "Showing content of %s\n", s)
 			fmt.Printf("%s", strs)
+			fmt.Fprintf(os.Stderr, "\n")
 			return nil
 		},
 		"monitor": func(s string) error {
