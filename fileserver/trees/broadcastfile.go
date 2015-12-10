@@ -19,6 +19,8 @@ type BroadcastOpenFile struct {
 
 	curbuf     []byte
 	curbufLock sync.RWMutex
+
+	unwanted bool
 }
 
 func (of *BroadcastOpenFile) Seek(int64, int) (int64, error) {
@@ -74,13 +76,11 @@ func (of *BroadcastOpenFile) fetch() ([]byte, error) {
 	of.queueCond.L.Lock()
 	defer of.queueCond.L.Unlock()
 
-	if len(of.queue) == 0 {
+	for len(of.queue) == 0 && of.unwanted == false {
 		of.queueCond.Wait()
 	}
 
-	// If we got woken and the queue is still zero, assume we're not wanted
-	// anymore.
-	if len(of.queue) == 0 {
+	if of.unwanted {
 		return nil, ErrTerminatedRead
 	}
 
@@ -99,6 +99,8 @@ func (of *BroadcastOpenFile) push(b []byte) {
 func (of *BroadcastOpenFile) Close() error {
 	of.Lock()
 	defer of.Unlock()
+	of.queue = nil
+	of.unwanted = true
 	of.queueCond.Broadcast()
 	if of.f != nil {
 		of.f.deregister(of)
@@ -108,10 +110,9 @@ func (of *BroadcastOpenFile) Close() error {
 }
 
 func NewBroadcastOpenFile(f *BroadcastFile) *BroadcastOpenFile {
-	var l sync.Mutex
 	return &BroadcastOpenFile{
 		f:         f,
-		queueCond: sync.NewCond(&l),
+		queueCond: sync.NewCond(&sync.Mutex{}),
 	}
 }
 
@@ -129,7 +130,7 @@ func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 
 	f.Lock()
 	defer f.Unlock()
-	f.atime = time.Now()
+	f.Atime = time.Now()
 
 	x := NewBroadcastOpenFile(f)
 
@@ -139,7 +140,7 @@ func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 
 func (f *BroadcastFile) Push(b []byte) error {
 	f.Lock()
-	f.version++
+	f.Version++
 	f.Unlock()
 	f.RLock()
 	defer f.RUnlock()
