@@ -137,6 +137,17 @@ func (c *Client) Ditch(t qp.Tag) error {
 	return c.killChannel(t)
 }
 
+// PendingTags return tags that are currently in use.
+func (c *Client) PendingTags() []qp.Tag {
+	c.queueLock.RLock()
+	defer c.queueLock.RUnlock()
+	var t []qp.Tag
+	for tag := range c.queue {
+		t = append(t, tag)
+	}
+	return t
+}
+
 // Start starts the response parsing loop.
 func (c *Client) Start() error {
 	for c.dead == nil {

@@ -16,19 +16,11 @@ const (
 )
 
 var (
+	ErrNotADirectory          = errors.New("not a directory")
+	ErrNoSuchFile             = errors.New("no such file")
 	ErrUnknownProtocol        = errors.New("unknown protocol")
 	ErrSimpleClientNotStarted = errors.New("client not started")
-	ErrNoSuchFile             = errors.New("no such file")
-	ErrNotADirectory          = errors.New("not a directory")
-	ErrWeirdResponse          = errors.New("weird response")
 )
-
-func toError(m qp.Message) error {
-	if eresp, ok := m.(*qp.ErrorResponse); ok {
-		return errors.New(eresp.Error)
-	}
-	return nil
-}
 
 func emptyStat() qp.Stat {
 	return qp.Stat{
@@ -45,23 +37,9 @@ func emptyStat() qp.Stat {
 // the most efficient way to use 9P, but allows using such servers with little
 // to no clue about what exactly 9P is.
 type SimpleClient struct {
-	c       *Client
+	c       *DirectClient
 	maxSize uint32
-	root    qp.Fid
-	nextFid qp.Fid
-}
-
-func (c *SimpleClient) getFid() qp.Fid {
-	// We need to skip NOFID (highest value) and 0 (our root)
-	if c.nextFid == qp.NOFID {
-		c.nextFid++
-	}
-	if c.nextFid == 0 {
-		c.nextFid++
-	}
-	f := c.nextFid
-	c.nextFid++
-	return f
+	root    *Fid
 }
 
 func (c *SimpleClient) setup(username, servicename string) error {
@@ -69,97 +47,42 @@ func (c *SimpleClient) setup(username, servicename string) error {
 		return ErrSimpleClientNotStarted
 	}
 
-	resp, err := c.c.Send(&qp.VersionRequest{
-		Tag:     qp.NOTAG,
-		MaxSize: DefaultMaxSize,
-		Version: qp.Version,
-	})
+	var version string
+	var err error
+	c.maxSize, version, err = c.c.Version(DefaultMaxSize, qp.Version)
 	if err != nil {
-		c.c.Stop()
-		c.c = nil
 		return err
 	}
-	if err = toError(resp); err != nil {
-		c.c.Stop()
-		c.c = nil
-		return err
-	}
-
-	vresp, ok := resp.(*qp.VersionResponse)
-	if !ok {
-		return ErrWeirdResponse
-	}
-
-	if vresp.Version != qp.Version {
+	if version != qp.Version {
 		return ErrUnknownProtocol
 	}
 
-	c.maxSize = vresp.MaxSize
-
-	t, err := c.c.Tag()
+	c.root, _, err = c.c.Attach(nil, username, servicename)
 	if err != nil {
-		c.c.Stop()
-		c.c = nil
 		return err
 	}
-
-	resp, err = c.c.Send(&qp.AttachRequest{
-		Tag:      t,
-		Fid:      c.root,
-		AuthFid:  qp.NOFID,
-		Username: username,
-		Service:  servicename,
-	})
-
-	if err != nil {
-		c.c.Stop()
-		c.c = nil
-		return err
-	}
-	if err = toError(resp); err != nil {
-		c.c.Stop()
-		c.c = nil
-		return err
-	}
-
 	return nil
 }
 
-func (c *SimpleClient) readAll(fid qp.Fid) ([]byte, error) {
+func (c *SimpleClient) readAll(fid *Fid) ([]byte, error) {
 	var b []byte
 
 	for {
-		t, err := c.c.Tag()
+		// 9 is the size of a read response
+		data, err := fid.Read(uint64(len(b)), c.maxSize-9)
 		if err != nil {
 			return nil, err
 		}
-		resp, err := c.c.Send(&qp.ReadRequest{
-			Tag:    t,
-			Fid:    fid,
-			Offset: uint64(len(b)),
-			Count:  c.maxSize - 9, // The size of a response
-		})
-		if err != nil {
-			return nil, err
-		}
-		if err = toError(resp); err != nil {
-			return nil, err
-		}
-		rresp, ok := resp.(*qp.ReadResponse)
-		if !ok {
-			return nil, ErrWeirdResponse
-		}
-
-		if len(rresp.Data) == 0 {
+		if len(data) == 0 {
 			break
 		}
-		b = append(b, rresp.Data...)
+		b = append(b, data...)
 	}
 
 	return b, nil
 }
 
-func (c *SimpleClient) writeAll(fid qp.Fid, data []byte) error {
+func (c *SimpleClient) writeAll(fid *Fid, data []byte) error {
 	var offset uint64
 	for {
 		count := int(c.maxSize - 20)
@@ -171,34 +94,17 @@ func (c *SimpleClient) writeAll(fid qp.Fid, data []byte) error {
 			break
 		}
 
-		t, err := c.c.Tag()
+		wcount, err := fid.Write(offset, data[offset:offset+uint64(count)])
 		if err != nil {
 			return err
 		}
-		resp, err := c.c.Send(&qp.WriteRequest{
-			Tag:    t,
-			Fid:    fid,
-			Offset: offset,
-			Data:   data[offset : offset+uint64(count)],
-		})
-		if err != nil {
-			return err
-		}
-		if err = toError(resp); err != nil {
-			return err
-		}
-
-		wresp, ok := resp.(*qp.WriteResponse)
-		if !ok {
-			return ErrWeirdResponse
-		}
-		offset += uint64(wresp.Count)
+		offset += uint64(wcount)
 	}
 
 	return nil
 }
 
-func (c *SimpleClient) walkTo(file string) (qp.Fid, qp.Qid, error) {
+func (c *SimpleClient) walkTo(file string) (*Fid, qp.Qid, error) {
 	s := strings.Split(file, "/")
 
 	var strs []string
@@ -209,56 +115,29 @@ func (c *SimpleClient) walkTo(file string) (qp.Fid, qp.Qid, error) {
 	}
 	s = strs
 
-	f := c.getFid()
-	t, err := c.c.Tag()
+	fid, qids, err := c.root.Walk(s)
 	if err != nil {
-		return qp.NOFID, qp.Qid{}, err
-	}
-	resp, err := c.c.Send(&qp.WalkRequest{
-		Tag:    t,
-		Fid:    c.root,
-		NewFid: f,
-		Names:  s,
-	})
-	if err != nil {
-		return qp.NOFID, qp.Qid{}, err
-	}
-	if err = toError(resp); err != nil {
-		return qp.NOFID, qp.Qid{}, err
+		return nil, qp.Qid{}, err
 	}
 
-	wresp, ok := resp.(*qp.WalkResponse)
-	if !ok {
-		return qp.NOFID, qp.Qid{}, ErrWeirdResponse
-	}
-
-	if len(wresp.Qids) != len(s) {
-		return qp.NOFID, qp.Qid{}, ErrNoSuchFile
+	if len(qids) != len(s) {
+		return nil, qp.Qid{}, ErrNoSuchFile
 	}
 
 	q := qp.Qid{}
-	if len(wresp.Qids) > 0 {
-		end := len(wresp.Qids) - 1
-		for i, q := range wresp.Qids {
+	if len(qids) > 0 {
+		end := len(qids) - 1
+		for i, q := range qids {
 			if i == end {
 				break
 			}
 			if q.Type&qp.QTDIR == 0 {
-				return qp.NOFID, qp.Qid{}, ErrNotADirectory
+				return nil, qp.Qid{}, ErrNotADirectory
 			}
 		}
-		q = wresp.Qids[end]
+		q = qids[end]
 	}
-
-	return f, q, nil
-}
-
-func (c *SimpleClient) clunk(fid qp.Fid) {
-	t, _ := c.c.Tag()
-	c.c.Send(&qp.ClunkRequest{
-		Tag: t,
-		Fid: fid,
-	})
+	return fid, q, nil
 }
 
 func (c *SimpleClient) Stat(file string) (qp.Stat, error) {
@@ -266,31 +145,9 @@ func (c *SimpleClient) Stat(file string) (qp.Stat, error) {
 	if err != nil {
 		return qp.Stat{}, err
 	}
-	defer c.clunk(fid)
+	defer fid.Clunk()
 
-	t, err := c.c.Tag()
-	if err != nil {
-		return qp.Stat{}, err
-	}
-
-	resp, err := c.c.Send(&qp.StatRequest{
-		Tag: t,
-		Fid: fid,
-	})
-
-	if err != nil {
-		return qp.Stat{}, err
-	}
-	if err = toError(resp); err != nil {
-		return qp.Stat{}, err
-	}
-
-	sresp, ok := resp.(*qp.StatResponse)
-	if !ok {
-		return qp.Stat{}, ErrWeirdResponse
-	}
-
-	return sresp.Stat, nil
+	return fid.Stat()
 }
 
 func (c *SimpleClient) ReadSome(file string, offset uint64) ([]byte, error) {
@@ -298,46 +155,12 @@ func (c *SimpleClient) ReadSome(file string, offset uint64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer c.clunk(fid)
-
-	t, err := c.c.Tag()
+	defer fid.Clunk()
+	_, _, err = fid.Open(qp.OREAD)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.c.Send(&qp.OpenRequest{
-		Tag:  t,
-		Fid:  fid,
-		Mode: qp.OREAD,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err = toError(resp); err != nil {
-		return nil, err
-	}
-
-	t, err = c.c.Tag()
-	if err != nil {
-		return nil, err
-	}
-	resp, err = c.c.Send(&qp.ReadRequest{
-		Tag:    t,
-		Fid:    fid,
-		Offset: offset,
-		Count:  c.maxSize - 9, // The size of a response
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err = toError(resp); err != nil {
-		return nil, err
-	}
-	rresp, ok := resp.(*qp.ReadResponse)
-	if !ok {
-		return nil, ErrWeirdResponse
-	}
-
-	return rresp.Data, nil
+	return fid.Read(offset, c.maxSize-9)
 }
 
 func (c *SimpleClient) Read(file string) ([]byte, error) {
@@ -345,21 +168,9 @@ func (c *SimpleClient) Read(file string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer c.clunk(fid)
-
-	t, err := c.c.Tag()
+	defer fid.Clunk()
+	_, _, err = fid.Open(qp.OREAD)
 	if err != nil {
-		return nil, err
-	}
-	resp, err := c.c.Send(&qp.OpenRequest{
-		Tag:  t,
-		Fid:  fid,
-		Mode: qp.OREAD,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err = toError(resp); err != nil {
 		return nil, err
 	}
 
@@ -371,21 +182,9 @@ func (c *SimpleClient) Write(content []byte, file string) error {
 	if err != nil {
 		return err
 	}
-	defer c.clunk(fid)
-
-	t, err := c.c.Tag()
+	defer fid.Clunk()
+	_, _, err = fid.Open(qp.OWRITE)
 	if err != nil {
-		return err
-	}
-	resp, err := c.c.Send(&qp.OpenRequest{
-		Tag:  t,
-		Fid:  fid,
-		Mode: qp.OWRITE,
-	})
-	if err != nil {
-		return err
-	}
-	if err = toError(resp); err != nil {
 		return err
 	}
 
@@ -397,21 +196,9 @@ func (c *SimpleClient) List(file string) ([]qp.Stat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer c.clunk(fid)
-
-	t, err := c.c.Tag()
+	defer fid.Clunk()
+	_, _, err = fid.Open(qp.OREAD)
 	if err != nil {
-		return nil, err
-	}
-	resp, err := c.c.Send(&qp.OpenRequest{
-		Tag:  t,
-		Fid:  fid,
-		Mode: qp.OREAD,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err = toError(resp); err != nil {
 		return nil, err
 	}
 
@@ -442,28 +229,15 @@ func (c *SimpleClient) Create(name string, directory bool) error {
 	if err != nil {
 		return err
 	}
-	defer c.clunk(fid)
+	defer fid.Clunk()
 
 	perms := qp.FileMode(0755)
 	if directory {
 		perms |= qp.DMDIR
 	}
 
-	t, err := c.c.Tag()
+	_, _, err = fid.Create(file, perms, qp.OREAD)
 	if err != nil {
-		return err
-	}
-	resp, err := c.c.Send(&qp.CreateRequest{
-		Tag:         t,
-		Fid:         fid,
-		Name:        file,
-		Permissions: perms,
-		Mode:        qp.OREAD,
-	})
-	if err != nil {
-		return err
-	}
-	if err = toError(resp); err != nil {
 		return err
 	}
 	return nil
@@ -486,27 +260,12 @@ func (c *SimpleClient) Rename(oldname, newname string) error {
 	if err != nil {
 		return err
 	}
-	defer c.clunk(fid)
+	defer fid.Clunk()
 
 	s := emptyStat()
 	s.Name = snew[len(snew)-1]
 
-	t, err := c.c.Tag()
-	if err != nil {
-		return err
-	}
-	resp, err := c.c.Send(&qp.WriteStatRequest{
-		Tag:  t,
-		Fid:  fid,
-		Stat: s,
-	})
-	if err != nil {
-		return err
-	}
-	if err = toError(resp); err != nil {
-		return err
-	}
-	return nil
+	return fid.WriteStat(s)
 }
 
 func (c *SimpleClient) Remove(name string) error {
@@ -514,24 +273,7 @@ func (c *SimpleClient) Remove(name string) error {
 	if err != nil {
 		return err
 	}
-
-	t, err := c.c.Tag()
-	if err != nil {
-		c.clunk(fid)
-		return err
-	}
-	resp, err := c.c.Send(&qp.RemoveRequest{
-		Tag: t,
-		Fid: fid,
-	})
-	if err != nil {
-		c.clunk(fid)
-		return err
-	}
-	if err = toError(resp); err != nil {
-		c.clunk(fid)
-		return err
-	}
+	defer fid.Remove()
 	return nil
 }
 
@@ -541,8 +283,8 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 		return err
 	}
 
-	c.c = New(conn)
-	go c.c.Start()
+	c.c = &DirectClient{}
+	c.c.Connect(conn)
 
 	err = c.setup(username, servicename)
 	if err != nil {
@@ -552,8 +294,8 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 }
 
 func (c *SimpleClient) Connect(rw io.ReadWriter, username, servicename string) error {
-	c.c = New(rw)
-	go c.c.Start()
+	c.c = &DirectClient{}
+	c.c.Connect(rw)
 
 	err := c.setup(username, servicename)
 	if err != nil {
