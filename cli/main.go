@@ -204,17 +204,28 @@ func main() {
 			return nil
 		},
 		"get": func(s string) error {
-			if !(len(s) > 0 && s[0] == '/') {
-				s = path.Join(cwd, s)
+			args, err := ParseCommandLine(s)
+			if err != nil {
+				return err
 			}
-			target := path.Base(s)
-			f, err := os.Create(target)
+			cmd := kingpin.New("put", "")
+			remote := cmd.Arg("remote", "remote filename").Required().String()
+			local := cmd.Arg("local", "local filename").Required().String()
+			_, err = cmd.Parse(args)
+			if err != nil {
+				return err
+			}
+
+			if !(len(s) > 0 && s[0] == '/') {
+				*remote = path.Join(cwd, *remote)
+			}
+			f, err := os.Create(*local)
 			if err != nil {
 				return err
 			}
 
 			fmt.Fprintf(os.Stderr, "Checking: %s", s)
-			stat, err := c.Stat(s)
+			stat, err := c.Stat(*remote)
 			if err != nil {
 				return err
 			}
@@ -223,13 +234,13 @@ func main() {
 			}
 			fmt.Fprintf(os.Stderr, " - Done.\n")
 
-			fmt.Fprintf(os.Stderr, "Downloading: %s to %s [%dB]", s, target, stat.Length)
-			strs, err := c.Read(s)
+			fmt.Fprintf(os.Stderr, "Downloading: %s to %s [%dB]", remote, local, stat.Length)
+			strs, err := c.Read(*remote)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(os.Stderr, " - Downloaded %dB.\n", len(strs))
-			fmt.Fprintf(os.Stderr, "Writing data to %s", s)
+			fmt.Fprintf(os.Stderr, "Writing data to %s", *local)
 			for len(strs) > 0 {
 				n, err := f.Write(strs)
 				if err != nil {
@@ -242,9 +253,21 @@ func main() {
 			return nil
 		},
 		"put": func(s string) error {
-			target := path.Join(cwd, path.Base(s))
+			args, err := ParseCommandLine(s)
+			if err != nil {
+				return err
+			}
+			cmd := kingpin.New("put", "")
+			local := cmd.Arg("local", "local filename").Required().String()
+			remote := cmd.Arg("remote", "remote filename").Required().String()
+			_, err = cmd.Parse(args)
+			if err != nil {
+				return err
+			}
 
-			strs, err := ioutil.ReadFile(s)
+			target := path.Join(cwd, path.Base(*remote))
+
+			strs, err := ioutil.ReadFile(*local)
 			if err != nil {
 				return err
 			}
@@ -267,7 +290,7 @@ func main() {
 				return errors.New("file is a directory")
 			}
 
-			fmt.Fprintf(os.Stderr, "Uploading: %s to %s [%dB]", s, target, len(strs))
+			fmt.Fprintf(os.Stderr, "Uploading: %s to %s [%dB]", *local, target, len(strs))
 			err = c.Write(strs, target)
 			if err != nil {
 				return err
