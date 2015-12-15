@@ -8,11 +8,16 @@ import (
 	"github.com/joushou/qp"
 )
 
+// MagicWalk allows a file to override the returned file on walk.
+type MagicWalk interface {
+	MagicWalk(user string) (File, error)
+}
+
 // RAMTree represents an in-memory directory. Create on this directory will
-// add an in-memory RAMFile. It is capable of containing any item implementing
-// the File interface, in-memory or not. It supports basic permission checking
-// at owner and global, but not group level due to not having a group
-// database. Access and modified time is kept track of as well.
+// add an in-memory SyntheticFile. It is capable of containing any item
+// implementing the File interface, in-memory or not. It supports basic
+// permission checking at owner and global, but not group level due to not
+// having a group database. Access and modified time is kept track of as well.
 type RAMTree struct {
 	sync.RWMutex
 	tree        map[string]File
@@ -158,10 +163,10 @@ func (t *RAMTree) Create(user, name string, perms qp.FileMode) (File, error) {
 	var d File
 	if perms&qp.DMDIR != 0 {
 		perms = perms & (^qp.FileMode(0777) | (t.permissions & 0777))
-		d = NewRAMTree(name, perms, t.user, t.group)
+		d = NewSyntheticFile(name, perms, t.user, t.group)
 	} else {
 		perms = perms & (^qp.FileMode(0666) | (t.permissions & 0666))
-		d = NewRAMFile(name, perms, t.user, t.group)
+		d = NewSyntheticFile(name, perms, t.user, t.group)
 	}
 
 	t.tree[name] = d
@@ -234,7 +239,7 @@ func (t *RAMTree) Remove(user, name string) error {
 	return errors.New("no such file")
 }
 
-func (t *RAMTree) Walk(user string, name string) (File, error) {
+func (t *RAMTree) Walk(user, name string) (File, error) {
 	t.Lock()
 	defer t.Unlock()
 	owner := t.user == user
@@ -245,6 +250,13 @@ func (t *RAMTree) Walk(user string, name string) (File, error) {
 	t.atime = time.Now()
 	for i := range t.tree {
 		if i == name {
+			if o, ok := t.tree[i].(MagicWalk); ok {
+				// We could potentially end up trying to retake these locks.
+				t.Unlock()
+				r, err := o.MagicWalk(user)
+				t.Lock()
+				return r, err
+			}
 			return t.tree[i], nil
 		}
 	}
