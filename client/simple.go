@@ -119,6 +119,9 @@ func (c *SimpleClient) walkTo(file string) (*Fid, qp.Qid, error) {
 	if err != nil {
 		return nil, qp.Qid{}, err
 	}
+	if fid == nil {
+		return nil, qp.Qid{}, ErrNoSuchFile
+	}
 
 	if len(qids) != len(s) {
 		return nil, qp.Qid{}, ErrNoSuchFile
@@ -283,7 +286,7 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 		return err
 	}
 
-	c.c = &DirectClient{}
+	c.c = NewDirectClient()
 	c.c.Connect(conn)
 
 	err = c.setup(username, servicename)
@@ -294,7 +297,7 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 }
 
 func (c *SimpleClient) Connect(rw io.ReadWriter, username, servicename string) error {
-	c.c = &DirectClient{}
+	c.c = NewDirectClient()
 	c.c.Connect(rw)
 
 	err := c.setup(username, servicename)
