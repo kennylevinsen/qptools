@@ -86,13 +86,13 @@ func (t *RAMTree) Stat() (qp.Stat, error) {
 	}, nil
 }
 
-func (t *RAMTree) Accessed(_ OpenFile) {
+func (t *RAMTree) Accessed() {
 	t.Lock()
 	defer t.Unlock()
 	t.atime = time.Now()
 }
 
-func (t *RAMTree) Modified(_ OpenFile) {
+func (t *RAMTree) Modified() {
 	t.Lock()
 	defer t.Unlock()
 	t.mtime = time.Now()
@@ -100,7 +100,7 @@ func (t *RAMTree) Modified(_ OpenFile) {
 	t.version++
 }
 
-func (t *RAMTree) Closed(_ OpenFile) {
+func (t *RAMTree) Closed() {
 	t.Lock()
 	defer t.Unlock()
 	t.opens--
@@ -126,7 +126,7 @@ func (t *RAMTree) List(user string) ([]qp.Stat, error) {
 	return s, nil
 }
 
-func (t *RAMTree) Open(user string, mode qp.OpenMode) (OpenFile, error) {
+func (t *RAMTree) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
 	t.Lock()
 	defer t.Unlock()
 	owner := t.user == user
@@ -137,7 +137,7 @@ func (t *RAMTree) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 
 	t.atime = time.Now()
 	t.opens++
-	return &ListOpenTree{
+	return &ListHandle{
 		t:    t,
 		user: user,
 	}, nil

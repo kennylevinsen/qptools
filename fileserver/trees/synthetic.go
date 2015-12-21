@@ -8,93 +8,92 @@ import (
 	"github.com/joushou/qp"
 )
 
-// SyntheticOpenFile implements locked R/W access to a SyntheticFile's
-// internal Content byteslice. It updates atime, mtime, version and open
-// count.
-type SyntheticOpenFile struct {
+// SyntheticHandle implements locked R/W access to a SyntheticFile's internal
+// Content byteslice. It updates atime, mtime, version and open count.
+type SyntheticHandle struct {
 	sync.Mutex
-	offset     int64
 	f          *SyntheticFile
-	user       string
-	read       bool
-	write      bool
-	appendOnly bool
+	User       string
+	Offset     int64
+	Readable   bool
+	Writable   bool
+	AppendOnly bool
 }
 
-func (of *SyntheticOpenFile) Seek(offset int64, whence int) (int64, error) {
-	of.Lock()
-	defer of.Unlock()
-	if (!of.read && !of.write) || of.f == nil {
+func (h *SyntheticHandle) Seek(offset int64, whence int) (int64, error) {
+	h.Lock()
+	defer h.Unlock()
+	if (!h.Readable && !h.Writable) || h.f == nil {
 		return 0, errors.New("file not open")
 	}
-	of.f.RLock()
-	defer of.f.RUnlock()
+	h.f.RLock()
+	defer h.f.RUnlock()
 
-	cnt := of.f.Content
+	cnt := h.f.Content
 	length := int64(len(cnt))
 
 	switch whence {
 	case 0:
 	case 1:
-		offset = of.offset + offset
+		offset = h.Offset + offset
 	case 2:
 		offset = length + offset
 	default:
-		return of.offset, errors.New("invalid whence value")
+		return h.Offset, errors.New("invalid whence value")
 	}
 
 	if offset < 0 {
-		return of.offset, errors.New("negative seek invalid")
+		return h.Offset, errors.New("negative seek invalid")
 	}
 
 	if offset > length {
 		offset = length
 	}
 
-	of.offset = offset
-	of.f.Atime = time.Now()
-	return of.offset, nil
+	h.Offset = offset
+	h.f.Atime = time.Now()
+	return h.Offset, nil
 }
 
-func (of *SyntheticOpenFile) Read(p []byte) (int, error) {
-	of.Lock()
-	defer of.Unlock()
-	if !of.read || of.f == nil {
+func (h *SyntheticHandle) Read(p []byte) (int, error) {
+	h.Lock()
+	defer h.Unlock()
+	if !h.Readable || h.f == nil {
 		return 0, errors.New("file not open for read")
 	}
 
-	of.f.RLock()
-	defer of.f.RUnlock()
+	h.f.RLock()
+	defer h.f.RUnlock()
 
-	cnt := of.f.Content
+	cnt := h.f.Content
 	maxRead := int64(len(p))
-	remaining := int64(len(cnt)) - of.offset
+	remaining := int64(len(cnt)) - h.Offset
 	if maxRead > remaining {
 		maxRead = remaining
 	}
 
-	copy(p, cnt[of.offset:maxRead+of.offset])
-	of.offset += maxRead
-	of.f.Atime = time.Now()
+	copy(p, cnt[h.Offset:maxRead+h.Offset])
+	h.Offset += maxRead
+	h.f.Atime = time.Now()
 	return int(maxRead), nil
 }
 
-func (of *SyntheticOpenFile) Write(p []byte) (int, error) {
-	of.Lock()
-	defer of.Unlock()
-	if !of.write || of.f == nil {
+func (h *SyntheticHandle) Write(p []byte) (int, error) {
+	h.Lock()
+	defer h.Unlock()
+	if !h.Writable || h.f == nil {
 		return 0, errors.New("file not open for write")
 	}
 
-	of.f.Lock()
-	defer of.f.Unlock()
+	h.f.Lock()
+	defer h.f.Unlock()
 
-	cnt := of.f.Content
-	if of.appendOnly {
-		of.offset = int64(len(cnt))
+	cnt := h.f.Content
+	if h.AppendOnly {
+		h.Offset = int64(len(cnt))
 	}
 	wlen := int64(len(p))
-	l := int(wlen + of.offset)
+	l := int(wlen + h.Offset)
 
 	if l > cap(cnt) {
 		c := l * 2
@@ -102,97 +101,143 @@ func (of *SyntheticOpenFile) Write(p []byte) (int, error) {
 			c = 10240
 		}
 		b := make([]byte, l, c)
-		copy(b, cnt[:of.offset])
-		of.f.Content = b
+		copy(b, cnt[:h.Offset])
+		h.f.Content = b
 	} else if l > len(cnt) {
-		of.f.Content = cnt[:l]
+		h.f.Content = cnt[:l]
 	}
 
-	copy(of.f.Content[of.offset:], p)
+	copy(h.f.Content[h.Offset:], p)
 
-	of.offset += wlen
-	of.f.Mtime = time.Now()
-	of.f.Atime = of.f.Mtime
-	of.f.MUID = of.user
-	of.f.Version++
+	h.Offset += wlen
+	h.f.Mtime = time.Now()
+	h.f.Atime = h.f.Mtime
+	h.f.MUID = h.User
+	h.f.Version++
 	return int(wlen), nil
 }
 
-func (of *SyntheticOpenFile) Close() error {
-	of.Lock()
-	defer of.Unlock()
-	of.f.Lock()
-	defer of.f.Unlock()
-	of.f.Opens--
-	of.f = nil
+func (h *SyntheticHandle) Close() error {
+	h.Lock()
+	defer h.Unlock()
+	h.f.Lock()
+	defer h.f.Unlock()
+	h.f.Opens--
+	h.f = nil
 	return nil
 }
 
-// SyntheticROOpenFile is an OpenFile implementation that serves a static
-// byte-slice for reads, rather than SyntheticFile's built-in slice. It's
-// useful for making unique content available only to the user that opened the
-// file.
-type SyntheticROOpenFile struct {
-	Content []byte
-	offset  int64
+// DetachedHandle is like SyntheticHandle, but instead of enquiring about
+// content from the file itself, DetachedHandle manipulates a local content
+// slice, detached from the original file. This is useful for making things
+// like files with unique content for each opener. Access does not affect
+// Atime, Mtime, MUID or Version of the original file.
+type DetachedHandle struct {
+	sync.Mutex
+	Content    []byte
+	Offset     int64
+	Readable   bool
+	Writable   bool
+	AppendOnly bool
 }
 
-func (of *SyntheticROOpenFile) Seek(offset int64, whence int) (int64, error) {
-	length := int64(len(of.Content))
+func (h *DetachedHandle) Seek(offset int64, whence int) (int64, error) {
+	h.Lock()
+	defer h.Unlock()
+	if !h.Readable && !h.Writable {
+		return 0, errors.New("file not open")
+	}
+	length := int64(len(h.Content))
 	switch whence {
 	case 0:
 	case 1:
-		offset = of.offset + offset
+		offset = h.Offset + offset
 	case 2:
 		offset = length + offset
 	default:
-		return of.offset, errors.New("invalid whence value")
+		return h.Offset, errors.New("invalid whence value")
 	}
 
 	if offset < 0 {
-		return of.offset, errors.New("negative seek invalid")
+		return h.Offset, errors.New("negative seek invalid")
 	}
 
-	if offset > int64(len(of.Content)) {
-		offset = int64(len(of.Content))
+	if offset > int64(len(h.Content)) {
+		offset = int64(len(h.Content))
 	}
 
-	of.offset = offset
-	return of.offset, nil
+	h.Offset = offset
+	return h.Offset, nil
 }
 
-func (of *SyntheticROOpenFile) Read(p []byte) (int, error) {
+func (h *DetachedHandle) Read(p []byte) (int, error) {
+	h.Lock()
+	defer h.Unlock()
+	if !h.Readable {
+		return 0, errors.New("file not open for read")
+	}
 	maxRead := int64(len(p))
-	remaining := int64(len(of.Content)) - of.offset
+	remaining := int64(len(h.Content)) - h.Offset
 	if maxRead > remaining {
 		maxRead = remaining
 	}
 
-	copy(p, of.Content[of.offset:maxRead+of.offset])
-	of.offset += maxRead
+	copy(p, h.Content[h.Offset:maxRead+h.Offset])
+	h.Offset += maxRead
 	return int(maxRead), nil
 }
 
-func (of *SyntheticROOpenFile) Write(p []byte) (int, error) {
-	return 0, errors.New("cannot write to session file")
+func (h *DetachedHandle) Write(p []byte) (int, error) {
+	h.Lock()
+	defer h.Unlock()
+
+	if !h.Writable {
+		return 0, errors.New("file not open for write")
+	}
+
+	if h.AppendOnly {
+		h.Offset = int64(len(h.Content))
+	}
+	wlen := int64(len(p))
+	l := int(wlen + h.Offset)
+
+	if l > cap(h.Content) {
+		c := l * 2
+		if l < 10240 {
+			c = 10240
+		}
+		b := make([]byte, l, c)
+		copy(b, h.Content[:h.Offset])
+		h.Content = b
+	} else if l > len(h.Content) {
+		h.Content = h.Content[:l]
+	}
+
+	copy(h.Content[h.Offset:], p)
+
+	h.Offset += wlen
+	return int(wlen), nil
 }
 
-func (of *SyntheticROOpenFile) Close() error {
+func (h *DetachedHandle) Close() error {
 	return nil
 }
 
-// NewSyntheticROOpenFile creates a new SyntheticROOpenFile.
-func NewSyntheticROOpenFile(cnt []byte) *SyntheticROOpenFile {
-	return &SyntheticROOpenFile{
-		Content: cnt,
+// NewDetachedHandle creates a new DetachedHandle.
+func NewDetachedHandle(cnt []byte, readable, writable, appendOnly bool) *DetachedHandle {
+	return &DetachedHandle{
+		Content:    cnt,
+		Readable:   readable,
+		Writable:   writable,
+		AppendOnly: appendOnly,
 	}
 }
 
 // SynetheticFile is a File implementation that takes care of the more boring
 // aspects of a file implementation, such as permission-handling and qid/stat
 // generation. By default, it serves the Content slice through a
-// SyntheticROOpenFile. In most cases, one would embed SyntheticFile and
-// provide their own Open implementation for more interesting functionality.
+// SyntheticROHandle. In most cases, one would embed SyntheticFile and provide
+// their own Open implementation for more interesting functionality.
 type SyntheticFile struct {
 	sync.RWMutex
 	ID          uint64
@@ -277,7 +322,7 @@ func (f *SyntheticFile) CanOpen(user string, mode qp.OpenMode) bool {
 	return permCheck(owner, f.Permissions, mode)
 }
 
-func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
+func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
 	if !f.CanOpen(user, mode) {
 		return nil, errors.New("access denied")
 	}
@@ -287,12 +332,12 @@ func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 	f.Atime = time.Now()
 	f.Opens++
 
-	return &SyntheticOpenFile{
+	return &SyntheticHandle{
 		f:          f,
-		user:       user,
-		read:       mode&3 == qp.OREAD || mode&3 == qp.OEXEC || mode&3 == qp.ORDWR,
-		write:      mode&3 == qp.OWRITE || mode&3 == qp.ORDWR,
-		appendOnly: f.Permissions&qp.DMAPPEND != 0,
+		User:       user,
+		Readable:   mode&3 == qp.OREAD || mode&3 == qp.OEXEC || mode&3 == qp.ORDWR,
+		Writable:   mode&3 == qp.OWRITE || mode&3 == qp.ORDWR,
+		AppendOnly: f.Permissions&qp.DMAPPEND != 0,
 	}, nil
 }
 
@@ -323,13 +368,13 @@ func NewSyntheticFile(name string, permissions qp.FileMode, user, group string) 
 	}
 }
 
-type LockedOpenFile struct {
-	OpenFile
+type LockedHandle struct {
+	ReadWriteSeekCloser
 	Locker sync.Locker
 }
 
-func (of *LockedOpenFile) Close() error {
-	err := of.OpenFile.Close()
+func (of *LockedHandle) Close() error {
+	err := of.ReadWriteSeekCloser.Close()
 	of.Locker.Unlock()
 	return err
 }
@@ -342,7 +387,7 @@ type LockedFile struct {
 	OpenLock sync.RWMutex
 }
 
-func (f *LockedFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
+func (f *LockedFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
 	of, err := f.File.Open(user, mode)
 	if err != nil {
 		return of, err
@@ -362,9 +407,9 @@ func (f *LockedFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 	}
 
 	l.Lock()
-	return &LockedOpenFile{
-		OpenFile: of,
-		Locker:   l,
+	return &LockedHandle{
+		ReadWriteSeekCloser: of,
+		Locker:              l,
 	}, nil
 }
 

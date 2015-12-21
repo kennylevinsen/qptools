@@ -1,6 +1,7 @@
 package trees
 
 import (
+	"io"
 	"sync"
 
 	"github.com/joushou/qp"
@@ -22,7 +23,7 @@ func nextID() uint64 {
 type File interface {
 	Name() (string, error)
 
-	Open(user string, mode qp.OpenMode) (OpenFile, error)
+	Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error)
 
 	Qid() (qp.Qid, error)
 	Stat() (qp.Stat, error)
@@ -41,11 +42,11 @@ type Dir interface {
 	Rename(user, oldname, newname string) error
 }
 
-type OpenFile interface {
-	Seek(offset int64, whence int) (int64, error)
-	Read(p []byte) (int, error)
-	Write(p []byte) (int, error)
-	Close() error
+type ReadWriteSeekCloser interface {
+	io.Reader
+	io.Writer
+	io.Seeker
+	io.Closer
 }
 
 type Lister interface {
@@ -53,9 +54,9 @@ type Lister interface {
 }
 
 type AccessLogger interface {
-	Accessed(OpenFile)
-	Modified(OpenFile)
-	Closed(OpenFile)
+	Accessed()
+	Modified()
+	Closed()
 }
 
 func permCheck(owner bool, permissions qp.FileMode, mode qp.OpenMode) bool {

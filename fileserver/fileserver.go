@@ -58,7 +58,7 @@ type fidState struct {
 
 	location FilePath
 
-	open     trees.OpenFile
+	open     trees.ReadWriteSeekCloser
 	mode     qp.OpenMode
 	username string
 }
@@ -815,6 +815,15 @@ func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 	})
 }
 
+func (fs *FileServer) session(r *qp.SessionRequestDote) {
+	fs.addTag(r.Tag)
+	fs.logreq(r.Tag, r)
+	fs.respond(r.Tag, &qp.ErrorResponse{
+		Tag:   r.Tag,
+		Error: "session restoration not supported",
+	})
+}
+
 // Start starts the server loop. The loop returns on I/O error.
 func (fs *FileServer) Start() error {
 	for fs.dead == nil {
@@ -853,7 +862,7 @@ func (fs *FileServer) Start() error {
 		case *qp.WriteStatRequest:
 			go fs.writeStat(mx)
 		case *qp.SessionRequestDote:
-			/* 9P2000.e */
+			fs.session(mx)
 		case *qp.SimpleReadRequestDote:
 			/* 9P2000.e */
 		case *qp.SimpleWriteRequestDote:

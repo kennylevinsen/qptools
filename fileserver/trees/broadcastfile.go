@@ -10,9 +10,14 @@ import (
 
 var ErrTerminatedRead = errors.New("read terminated")
 
-type BroadcastOpenFile struct {
+// BroadcastHandle implements the R/W access to the broadcasting mechanism of
+// BroadcastFile.
+type BroadcastHandle struct {
 	sync.RWMutex
 	f *BroadcastFile
+
+	Readable bool
+	Writable bool
 
 	queue     [][]byte
 	queueCond *sync.Cond
@@ -23,107 +28,109 @@ type BroadcastOpenFile struct {
 	unwanted bool
 }
 
-func (of *BroadcastOpenFile) Seek(int64, int) (int64, error) {
+func (h *BroadcastHandle) Seek(int64, int) (int64, error) {
 	return 0, nil
 }
 
-func (of *BroadcastOpenFile) Read(p []byte) (int, error) {
-	of.RLock()
-	if of.f == nil {
-		return 0, errors.New("file not open")
+func (h *BroadcastHandle) Read(p []byte) (int, error) {
+	h.RLock()
+	if !h.Readable || h.f == nil {
+		return 0, errors.New("file not open for reading")
 	}
-	of.RUnlock()
+	h.RUnlock()
 
-	of.curbufLock.Lock()
-	defer of.curbufLock.Unlock()
+	h.curbufLock.Lock()
+	defer h.curbufLock.Unlock()
 
-	if of.curbuf == nil {
+	if h.curbuf == nil {
 		// If we don't have a buffer, wait for one
 		var err error
-		of.curbuf, err = of.fetch()
+		h.curbuf, err = h.fetch()
 		if err != nil {
 			return 0, err
 		}
-	} else if len(of.curbuf) == 0 {
+	} else if len(h.curbuf) == 0 {
 		// If our buffer is empty, clear it - next read will fetch us a new one.
-		of.curbuf = nil
+		h.curbuf = nil
 		return 0, nil
 	}
 
-	m := len(of.curbuf)
+	m := len(h.curbuf)
 	if len(p) < m {
 		m = len(p)
 	}
 
-	copy(p, of.curbuf[:m])
-	of.curbuf = of.curbuf[m:]
+	copy(p, h.curbuf[:m])
+	h.curbuf = h.curbuf[m:]
 
 	return m, nil
 }
 
-func (of *BroadcastOpenFile) Write(p []byte) (int, error) {
-	of.RLock()
-	defer of.RUnlock()
-	if of.f == nil {
-		return 0, errors.New("file not open")
+func (h *BroadcastHandle) Write(p []byte) (int, error) {
+	h.RLock()
+	defer h.RUnlock()
+	if !h.Writable || h.f == nil {
+		return 0, errors.New("file not open for writing")
 	}
-	of.f.Push(p)
+	h.f.Push(p)
 	return len(p), nil
 }
 
-func (of *BroadcastOpenFile) fetch() ([]byte, error) {
+func (h *BroadcastHandle) fetch() ([]byte, error) {
 	// We always read from the channel to avoid complex locking schemes.
-	of.queueCond.L.Lock()
-	defer of.queueCond.L.Unlock()
+	h.queueCond.L.Lock()
+	defer h.queueCond.L.Unlock()
 
-	for len(of.queue) == 0 && of.unwanted == false {
-		of.queueCond.Wait()
+	for len(h.queue) == 0 && h.unwanted == false {
+		h.queueCond.Wait()
 	}
 
-	if of.unwanted {
+	if h.unwanted {
 		return nil, ErrTerminatedRead
 	}
 
-	b := of.queue[0]
-	of.queue = of.queue[1:]
+	b := h.queue[0]
+	h.queue = h.queue[1:]
 	return b, nil
 }
 
-func (of *BroadcastOpenFile) push(b []byte) {
-	of.queueCond.L.Lock()
-	defer of.queueCond.L.Unlock()
-	of.queue = append(of.queue, b)
-	of.queueCond.Signal()
+func (h *BroadcastHandle) push(b []byte) {
+	h.queueCond.L.Lock()
+	defer h.queueCond.L.Unlock()
+	h.queue = append(h.queue, b)
+	h.queueCond.Signal()
 }
 
-func (of *BroadcastOpenFile) Close() error {
-	of.Lock()
-	defer of.Unlock()
-	of.queue = nil
-	of.unwanted = true
-	of.queueCond.Broadcast()
-	if of.f != nil {
-		of.f.deregister(of)
-		of.f = nil
+func (h *BroadcastHandle) Close() error {
+	h.Lock()
+	defer h.Unlock()
+	h.queue = nil
+	h.unwanted = true
+	h.queueCond.Broadcast()
+
+	if h.Readable && h.f != nil {
+		// Only readable files are registered
+		h.f.deregister(h)
 	}
+	h.f = nil
 	return nil
 }
 
-func NewBroadcastOpenFile(f *BroadcastFile) *BroadcastOpenFile {
-	return &BroadcastOpenFile{
-		f:         f,
-		queueCond: sync.NewCond(&sync.Mutex{}),
-	}
-}
-
+// BroadcastFile provides broadcast functionality. Writing to the file allows
+// everyone who had the file open for reading during the write to read and
+// receive the message.
 type BroadcastFile struct {
 	sync.RWMutex
-	files []*BroadcastOpenFile
+	files []*BroadcastHandle
 
 	*SyntheticFile
 }
 
-func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
+// Open returns a new BroadcastHandle. If it is readable, it is also
+// registered on the list of open files to receive broadcast messages. Do note
+// that BroadcastFile keeps a reference to all listening handles. A handle can
+// therefore only be garbage collected if Close has been called on it.
+func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
 	if !f.CanOpen(user, mode) {
 		return nil, errors.New("access denied")
 	}
@@ -132,35 +139,50 @@ func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 	defer f.Unlock()
 	f.Atime = time.Now()
 
-	x := NewBroadcastOpenFile(f)
+	readable := mode&3 == qp.OREAD || mode&3 == qp.OEXEC || mode&3 == qp.ORDWR
+	writable := mode&3 == qp.OWRITE || mode&3 == qp.ORDWR
 
-	f.files = append(f.files, x)
+	x := &BroadcastHandle{
+		f:         f,
+		queueCond: sync.NewCond(&sync.Mutex{}),
+		Readable:  readable,
+		Writable:  writable,
+	}
+
+	if readable {
+		// We only register readable files for the queue
+		f.files = append(f.files, x)
+	}
+
 	return x, nil
 }
 
+// Push pushes a new broadcast message for all current listeners.
 func (f *BroadcastFile) Push(b []byte) error {
 	f.Lock()
 	f.Version++
 	f.Unlock()
 	f.RLock()
 	defer f.RUnlock()
-	for _, of := range f.files {
-		of.push(b)
+	for _, h := range f.files {
+		h.push(b)
 	}
 	return nil
 }
 
-func (f *BroadcastFile) deregister(of *BroadcastOpenFile) {
+// deregister removes a handle from the listener list.
+func (f *BroadcastFile) deregister(h *BroadcastHandle) {
 	f.Lock()
 	defer f.Unlock()
 	for i := range f.files {
-		if f.files[i] == of {
+		if f.files[i] == h {
 			f.files = append(f.files[:i], f.files[i+1:]...)
 			return
 		}
 	}
 }
 
+// NewBroadcastFile returns a new BroadcastFile.
 func NewBroadcastFile(name string, permissions qp.FileMode, user, group string) *BroadcastFile {
 	return &BroadcastFile{
 		SyntheticFile: NewSyntheticFile(name, permissions, user, group),

@@ -46,8 +46,8 @@ func (mt *MixTree) List(user string) ([]qp.Stat, error) {
 }
 
 // Open return an OpenFile for the MixTree directory.
-func (mt *MixTree) Open(user string, mode qp.OpenMode) (OpenFile, error) {
-	return &ListOpenTree{
+func (mt *MixTree) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
+	return &ListHandle{
 		t:    mt,
 		user: user,
 	}, nil

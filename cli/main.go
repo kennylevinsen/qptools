@@ -201,7 +201,6 @@ func main() {
 				off += uint64(len(strs))
 				fmt.Printf("%s", strs)
 			}
-			return nil
 		},
 		"get": func(s string) error {
 			args, err := ParseCommandLine(s)

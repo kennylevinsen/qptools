@@ -34,6 +34,10 @@ func openMode2Flag(fm qp.OpenMode) int {
 	return nfm
 }
 
+// ProxyFile provides access to a local filesystem. Permissions aren't
+// checked, but assumed enforced by the OS. All owners are reported as the
+// provided user and group, not read from the filesystem due to portability
+// issues.
 type ProxyFile struct {
 	sync.RWMutex
 	root    string
@@ -44,6 +48,8 @@ type ProxyFile struct {
 	group   string
 }
 
+// updateInfo updates the local file information, unless caching is currently
+// enabled.
 func (pf *ProxyFile) updateInfo() error {
 	if pf.caching > 0 {
 		return nil
@@ -53,6 +59,8 @@ func (pf *ProxyFile) updateInfo() error {
 	return err
 }
 
+// cache enables the fileinfo cache. It is used to avoid updating the file
+// information multiple times during a single call to ProxyFile for no reason.
 func (pf *ProxyFile) cache(t bool) {
 	if t {
 		pf.caching++
@@ -181,7 +189,7 @@ func (pf *ProxyFile) List(_ string) ([]qp.Stat, error) {
 	return s, nil
 }
 
-func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
+func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
 	if err := pf.updateInfo(); err != nil {
 		return nil, err
 	}
@@ -194,7 +202,7 @@ func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (OpenFile, error) {
 	}
 
 	if isdir {
-		return &ListOpenTree{
+		return &ListHandle{
 			t:    pf,
 			user: user,
 		}, nil
