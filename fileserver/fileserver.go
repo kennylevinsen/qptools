@@ -15,18 +15,19 @@ import (
 // fileserver will blindly return errors from the directory tree to the 9P
 // client.
 const (
-	FidInUse         = "fid already in use"
-	TagInUse         = "tag already in use"
-	AuthNotSupported = "authentication not supported"
-	NoSuchService    = "no such service"
-	ResponseTooLong  = "response too long"
-	UnknownFid       = "unknown fid"
-	FidOpen          = "fid is open"
-	FidNotDirectory  = "fid is not a directory"
-	NoSuchFile       = "file does not exist"
-	InvalidFileName  = "invalid file name"
-	NotOpenForRead   = "file not opened for reading"
-	NotOpenForWrite  = "file not opened for writing"
+	FidInUse           = "fid already in use"
+	TagInUse           = "tag already in use"
+	AuthNotSupported   = "authentication not supported"
+	NoSuchService      = "no such service"
+	ResponseTooLong    = "response too long"
+	UnknownFid         = "unknown fid"
+	FidOpen            = "fid is open"
+	FidNotDirectory    = "fid is not a directory"
+	NoSuchFile         = "file does not exist"
+	InvalidFileName    = "invalid file name"
+	NotOpenForRead     = "file not opened for reading"
+	NotOpenForWrite    = "file not opened for writing"
+	UnsupportedMessage = "message not supported"
 )
 
 const (
@@ -63,7 +64,37 @@ type fidState struct {
 	username string
 }
 
-// FileServer serves a ReadWriter with a given handler.
+// FileServer serves an io.ReadWriter with the provided qp.Protocol,
+// navigating the provided trees.Dir.
+//
+// While intended to operate by the specs, FileServer breaks spec, sometimes
+// for good, sometimes for bad in the following scenarios:
+//
+// 1. FileServer does not enforce MAXWELEM (fcall(3)). A client providing more
+// than 16 names in a walk has already broken protocol, and there is no reason
+// for FileServer to enforce a protocol limit against a client known to not
+// comply with said limit.
+//
+// 2. FileServer responds to a request on a currently occupied tag with an
+// Rerror, but handles it internally as an implicit flush of the old request,
+// as the client would most likely not be able to map the response on this tag
+// to its request. There is, however, a small race in the current
+// implementation for this behaviour: When a tag collision is detected, an
+// error is created to send a response. If, however, the original request is
+// pending when the error is returned, but sends the response before the tag
+// collision error is sent, the tag collision error will be flushed instead.
+// Additional locking would seemingly be required to solve this issue, adding
+// unnecessary complexity in order to provide a better definition of a broken
+// request.
+//
+// 3. FileServer clunks all fids when the io.ReadWriter returns an error to
+// ensure that state is cleaned up properly.
+//
+// 4. FileServer does not care if the tag of a Version request is NOTAG.
+//
+// 5. FileServer permits explicit walks to ".".
+//
+// 6. FileServer does not enforce maxsize (hopefully a temporary limitation).
 type FileServer struct {
 	RW          io.ReadWriter
 	Verbosity   Verbosity
@@ -154,23 +185,6 @@ func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
 	delete(fs.tags, t)
 	fs.tagLock.Unlock()
 
-	/*
-		MaxSize conformance temporarily disabled, due to removal of EncodedLength.
-
-		l := uint32(m.EncodedLength())
-		if l > fs.maxsize {
-			if mx, ok := m.(*qp.ErrorResponse); ok {
-				diff := l - fs.maxsize
-				mx.Error = mx.Error[:uint32(len(mx.Error))-diff]
-			} else {
-				m = &qp.ErrorResponse{
-					Tag:   t,
-					Error: ResponseTooLong,
-				}
-			}
-		}
-	*/
-
 	fs.logresp(t, m)
 
 	err := fs.p.Encode(fs.RW, m)
@@ -194,6 +208,15 @@ func (fs *FileServer) addTag(t qp.Tag) error {
 	}
 	fs.tags[t] = true
 	return nil
+}
+
+// flushTag removes the tag.
+func (fs *FileServer) flushTag(t qp.Tag) {
+	fs.tagLock.Lock()
+	defer fs.tagLock.Unlock()
+	if _, exists := fs.tags[t]; exists {
+		delete(fs.tags, t)
+	}
 }
 
 // walkTo handles the walking logic. It is isolated to make implementation of
@@ -346,11 +369,9 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 	// the server loop is currently blocked. Had it continued ahead, blocking
 	// in its Decode call again, we would only be able to change the protocol
 	// for the next-next request. This would be an issue for .u, which change
-	// the Tattach message, as well as for .e, which might start a use Tsession
-	// immediately after our Rversion.
+	// the Tattach message, as well as for .e, which might follow up with a
+	// Tsession immediately after our Rversion.
 	switch versionstr {
-	// case qp.VersionDote:
-	// 	fs.p = qp.NineP2000Dote
 	case qp.Version:
 		fs.p = qp.NineP2000
 	default:
@@ -375,13 +396,20 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 // required. In the near future, it should allow external implementation of an
 // auth algo, exposed through the file abstraction.
 func (fs *FileServer) auth(r *qp.AuthRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
 	fs.logreq(r.Tag, r)
 	fs.sendError(r.Tag, AuthNotSupported)
 }
 
 func (fs *FileServer) attach(r *qp.AttachRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
@@ -423,20 +451,24 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 }
 
 func (fs *FileServer) flush(r *qp.FlushRequest) {
-	fs.addTag(r.Tag)
-	fs.logreq(r.Tag, r)
-	fs.tagLock.Lock()
-	if _, exists := fs.tags[r.OldTag]; exists {
-		delete(fs.tags, r.OldTag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
 	}
-	fs.tagLock.Unlock()
+
+	fs.logreq(r.Tag, r)
+	fs.flushTag(r.OldTag)
 	fs.respond(r.Tag, &qp.FlushResponse{
 		Tag: r.Tag,
 	})
 }
 
 func (fs *FileServer) walk(r *qp.WalkRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 
 	fs.fidLock.Lock()
@@ -470,7 +502,11 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 }
 
 func (fs *FileServer) open(r *qp.OpenRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 
 	fs.fidLock.RLock()
@@ -512,7 +548,11 @@ func (fs *FileServer) open(r *qp.OpenRequest) {
 }
 
 func (fs *FileServer) create(r *qp.CreateRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 
 	fs.fidLock.RLock()
@@ -580,7 +620,11 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 }
 
 func (fs *FileServer) read(r *qp.ReadRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 
 	fs.fidLock.RLock()
@@ -633,7 +677,11 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 }
 
 func (fs *FileServer) write(r *qp.WriteRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 
 	fs.fidLock.RLock()
@@ -674,7 +722,11 @@ func (fs *FileServer) write(r *qp.WriteRequest) {
 }
 
 func (fs *FileServer) clunk(r *qp.ClunkRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
@@ -701,7 +753,11 @@ func (fs *FileServer) clunk(r *qp.ClunkRequest) {
 }
 
 func (fs *FileServer) remove(r *qp.RemoveRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
@@ -745,7 +801,11 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 }
 
 func (fs *FileServer) stat(r *qp.StatRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 
 	fs.fidLock.RLock()
@@ -779,7 +839,11 @@ func (fs *FileServer) stat(r *qp.StatRequest) {
 }
 
 func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
-	fs.addTag(r.Tag)
+	if err := fs.addTag(r.Tag); err != nil {
+		fs.sendError(r.Tag, TagInUse)
+		return
+	}
+
 	fs.logreq(r.Tag, r)
 
 	fs.fidLock.RLock()
@@ -815,13 +879,13 @@ func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 	})
 }
 
-func (fs *FileServer) session(r *qp.SessionRequestDote) {
-	fs.addTag(r.Tag)
-	fs.logreq(r.Tag, r)
-	fs.respond(r.Tag, &qp.ErrorResponse{
-		Tag:   r.Tag,
-		Error: "session restoration not supported",
-	})
+func (fs *FileServer) unsupported(r qp.Message) {
+	t := r.GetTag()
+	if err := fs.addTag(t); err != nil {
+		fs.sendError(t, TagInUse)
+		return
+	}
+	fs.sendError(t, UnsupportedMessage)
 }
 
 // Start starts the server loop. The loop returns on I/O error.
@@ -861,20 +925,8 @@ func (fs *FileServer) Start() error {
 			go fs.stat(mx)
 		case *qp.WriteStatRequest:
 			go fs.writeStat(mx)
-		case *qp.SessionRequestDote:
-			fs.session(mx)
-		case *qp.SimpleReadRequestDote:
-			/* 9P2000.e */
-		case *qp.SimpleWriteRequestDote:
-			/* 9P2000.e */
-		case *qp.AuthRequestDotu:
-			/* 9P2000.u */
-		case *qp.AttachRequestDotu:
-			/* 9P2000.u */
-		case *qp.CreateRequestDotu:
-			/* 9P2000.u */
-		case *qp.WriteStatRequestDotu:
-			/* 9P2000.u */
+		default:
+			fs.unsupported(m)
 		}
 	}
 
