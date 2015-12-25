@@ -20,6 +20,7 @@ type SyntheticHandle struct {
 	AppendOnly bool
 }
 
+// Seek changes the offset of the handle.
 func (h *SyntheticHandle) Seek(offset int64, whence int) (int64, error) {
 	h.Lock()
 	defer h.Unlock()
@@ -55,6 +56,7 @@ func (h *SyntheticHandle) Seek(offset int64, whence int) (int64, error) {
 	return h.Offset, nil
 }
 
+// Read reads from the current offset.
 func (h *SyntheticHandle) Read(p []byte) (int, error) {
 	h.Lock()
 	defer h.Unlock()
@@ -78,6 +80,7 @@ func (h *SyntheticHandle) Read(p []byte) (int, error) {
 	return int(maxRead), nil
 }
 
+// Write writes at the current offset.
 func (h *SyntheticHandle) Write(p []byte) (int, error) {
 	h.Lock()
 	defer h.Unlock()
@@ -117,6 +120,8 @@ func (h *SyntheticHandle) Write(p []byte) (int, error) {
 	return int(wlen), nil
 }
 
+// Close closes the handle, decrementing the open counter of the
+// SyntheticFile.
 func (h *SyntheticHandle) Close() error {
 	h.Lock()
 	defer h.Unlock()
@@ -141,6 +146,7 @@ type DetachedHandle struct {
 	AppendOnly bool
 }
 
+// Seek changes the offset of the handle.
 func (h *DetachedHandle) Seek(offset int64, whence int) (int64, error) {
 	h.Lock()
 	defer h.Unlock()
@@ -170,6 +176,7 @@ func (h *DetachedHandle) Seek(offset int64, whence int) (int64, error) {
 	return h.Offset, nil
 }
 
+// Read reads from the current offset.
 func (h *DetachedHandle) Read(p []byte) (int, error) {
 	h.Lock()
 	defer h.Unlock()
@@ -187,6 +194,7 @@ func (h *DetachedHandle) Read(p []byte) (int, error) {
 	return int(maxRead), nil
 }
 
+// Write writes at the current offset.
 func (h *DetachedHandle) Write(p []byte) (int, error) {
 	h.Lock()
 	defer h.Unlock()
@@ -219,7 +227,12 @@ func (h *DetachedHandle) Write(p []byte) (int, error) {
 	return int(wlen), nil
 }
 
+// Close closes the handle.
 func (h *DetachedHandle) Close() error {
+	h.Lock()
+	defer h.Unlock()
+	h.Readable = false
+	h.Writable = false
 	return nil
 }
 
@@ -255,10 +268,12 @@ type SyntheticFile struct {
 	Opens       uint
 }
 
+// Name returns the name of the synthetic file. This cannot fail.
 func (f *SyntheticFile) Name() (string, error) {
 	return f.Filename, nil
 }
 
+// Qid returns the qid of the synthetic file. This cannot fail.
 func (f *SyntheticFile) Qid() (qp.Qid, error) {
 	return qp.Qid{
 		Type:    qp.QTFILE,
@@ -267,6 +282,10 @@ func (f *SyntheticFile) Qid() (qp.Qid, error) {
 	}, nil
 }
 
+// WriteStat writes a new stat struct. The file can be shortened, but not
+// extended. Length cannot be changed if FakeLength is in use. If the file has
+// been renamed, the directory's Rename must have been called to handle the
+// actual renaming first.
 func (f *SyntheticFile) WriteStat(s qp.Stat) error {
 	f.Lock()
 	defer f.Unlock()
@@ -289,6 +308,7 @@ func (f *SyntheticFile) WriteStat(s qp.Stat) error {
 	return nil
 }
 
+// Stat returns the stat struct. This cannot fail.
 func (f *SyntheticFile) Stat() (qp.Stat, error) {
 	f.RLock()
 	defer f.RUnlock()
@@ -315,6 +335,7 @@ func (f *SyntheticFile) Stat() (qp.Stat, error) {
 	}, nil
 }
 
+// CanOpen checks if a user may perform the requested open.
 func (f *SyntheticFile) CanOpen(user string, mode qp.OpenMode) bool {
 	f.RLock()
 	defer f.RUnlock()
@@ -322,6 +343,7 @@ func (f *SyntheticFile) CanOpen(user string, mode qp.OpenMode) bool {
 	return permCheck(owner, f.Permissions, mode)
 }
 
+// Open returns a SyntheticHandle if the open was permitted.
 func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
 	if !f.CanOpen(user, mode) {
 		return nil, errors.New("access denied")
@@ -341,14 +363,17 @@ func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser
 	}, nil
 }
 
+// IsDir returns false. This cannot fail.
 func (f *SyntheticFile) IsDir() (bool, error) {
 	return false, nil
 }
 
+// CanRemove returns true. This cannot fail.
 func (f *SyntheticFile) CanRemove() (bool, error) {
 	return true, nil
 }
 
+// SetContent sets the content and length
 func (f *SyntheticFile) SetContent(cnt []byte) {
 	f.Content = cnt
 	f.Length = uint64(len(cnt))
@@ -368,6 +393,7 @@ func NewSyntheticFile(name string, permissions qp.FileMode, user, group string) 
 	}
 }
 
+// LockedHandle is a handle wrapper for use by LockedFile.
 type LockedHandle struct {
 	ReadWriteSeekCloser
 	Locker sync.Locker
@@ -387,6 +413,8 @@ type LockedFile struct {
 	OpenLock sync.RWMutex
 }
 
+// Open returns a LockedHandle if the open was permitted, holding either the
+// read or the write lock, depending on the opening mode.
 func (f *LockedFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
 	of, err := f.File.Open(user, mode)
 	if err != nil {

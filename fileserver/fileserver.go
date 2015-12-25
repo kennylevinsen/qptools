@@ -41,6 +41,7 @@ const (
 // Verbosity is the verbosity level of the server.
 type Verbosity int
 
+// Verbosity levels
 const (
 	Quiet Verbosity = iota
 	Chatty

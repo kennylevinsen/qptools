@@ -37,7 +37,8 @@ func (h *MapHandle) Write(p []byte) (int, error) {
 // MapFile provides locked map[string]string storage. Reading the file dumps
 // the map, with each entry being written as "key=val", each item separated by
 // newlines. Writing "key=val\n" updates "key" to "val". Writing "key=\n"
-// deletes key.
+// deletes key. All characters are considered legal, with the exception that a
+// key cannot contain "=", and that a value cannot contain "\n".
 type MapFile struct {
 	*SyntheticFile
 	store     map[string]string
