@@ -103,6 +103,7 @@ func (dc *DirectClient) FlushAll() {
 	}
 }
 
+// Flush sends Tflush.
 func (dc *DirectClient) Flush(oldtag qp.Tag) error {
 	t, err := dc.client.Tag()
 	if err != nil {
@@ -116,6 +117,7 @@ func (dc *DirectClient) Flush(oldtag qp.Tag) error {
 	return err
 }
 
+// Version sends Tversion.
 func (dc *DirectClient) Version(maxsize uint32, version string) (uint32, string, error) {
 	resp, err := dc.client.Send(&qp.VersionRequest{
 		Tag:     qp.NOTAG,
@@ -138,6 +140,7 @@ func (dc *DirectClient) Version(maxsize uint32, version string) (uint32, string,
 	return vresp.MaxSize, vresp.Version, nil
 }
 
+// Auth sends Tauth.
 func (dc *DirectClient) Auth(user, service string) (*Fid, qp.Qid, error) {
 	t, err := dc.client.Tag()
 	if err != nil {
@@ -174,6 +177,7 @@ func (dc *DirectClient) Auth(user, service string) (*Fid, qp.Qid, error) {
 	return nfid, aresp.AuthQid, nil
 }
 
+// Attach sends Tattch.
 func (dc *DirectClient) Attach(authfid *Fid, user, service string) (*Fid, qp.Qid, error) {
 	t, err := dc.client.Tag()
 	if err != nil {
@@ -215,11 +219,13 @@ func (dc *DirectClient) Attach(authfid *Fid, user, service string) (*Fid, qp.Qid
 	return nfid, aresp.Qid, nil
 }
 
+// Fid represents a fid, implementing all 9P features that operate on a fid.
 type Fid struct {
 	fid    qp.Fid
 	parent *DirectClient
 }
 
+// Walk sends Twalk.
 func (f *Fid) Walk(names []string) (*Fid, []qp.Qid, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
@@ -260,6 +266,7 @@ func (f *Fid) Walk(names []string) (*Fid, []qp.Qid, error) {
 	return nfid, wresp.Qids, nil
 }
 
+// Clunk sends Tclunk.
 func (f *Fid) Clunk() error {
 	t, err := f.parent.client.Tag()
 	if err != nil {
@@ -284,6 +291,7 @@ func (f *Fid) Clunk() error {
 	return nil
 }
 
+// Remove sends Tremove.
 func (f *Fid) Remove() error {
 	t, err := f.parent.client.Tag()
 	if err != nil {
@@ -308,6 +316,7 @@ func (f *Fid) Remove() error {
 	return nil
 }
 
+// Open sends Topen.
 func (f *Fid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
@@ -335,6 +344,7 @@ func (f *Fid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
 	return oresp.Qid, oresp.IOUnit, nil
 }
 
+// Create sends Tcreate.
 func (f *Fid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.Qid, uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
@@ -364,6 +374,7 @@ func (f *Fid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.Qid, u
 	return oresp.Qid, oresp.IOUnit, nil
 }
 
+// Read sends Tread.
 func (f *Fid) Read(offset uint64, count uint32) ([]byte, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
@@ -390,6 +401,7 @@ func (f *Fid) Read(offset uint64, count uint32) ([]byte, error) {
 	return rresp.Data, nil
 }
 
+// Write sends Twrite.
 func (f *Fid) Write(offset uint64, data []byte) (uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
@@ -417,6 +429,7 @@ func (f *Fid) Write(offset uint64, data []byte) (uint32, error) {
 	return wresp.Count, nil
 }
 
+// Stat sends Tstat.
 func (f *Fid) Stat() (qp.Stat, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
@@ -443,6 +456,7 @@ func (f *Fid) Stat() (qp.Stat, error) {
 	return sresp.Stat, nil
 }
 
+// WriteStat sends Twstat.
 func (f *Fid) WriteStat(stat qp.Stat) error {
 	t, err := f.parent.client.Tag()
 	if err != nil {
