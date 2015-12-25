@@ -9,7 +9,7 @@ import (
 
 var (
 	globalIDLock sync.Mutex
-	globalID     uint64 = 0
+	globalID     uint64
 )
 
 func nextID() uint64 {

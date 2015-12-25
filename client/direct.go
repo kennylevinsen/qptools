@@ -9,9 +9,16 @@ import (
 )
 
 var (
-	ErrWeirdResponse   = errors.New("weird response")
+	// ErrWeirdResponse indicates that a response type was unexpected. That is,
+	// not the response fitting the request or ErrorResponse.
+	ErrWeirdResponse = errors.New("weird response")
+
+	// ErrNoFidsAvailable indicate that the pool of fids have been depleted,
+	// due to 0xFFFE files being open.
 	ErrNoFidsAvailable = errors.New("no available fids")
-	ErrNoSuchFid       = errors.New("no such fid")
+
+	// ErrNoSuchFid indicates that the fid does not exist.
+	ErrNoSuchFid = errors.New("no such fid")
 )
 
 func toError(m qp.Message) error {
@@ -30,12 +37,14 @@ type DirectClient struct {
 	nextFid qp.Fid
 }
 
+// NewDirectClient returns an initialized DirectClient.
 func NewDirectClient() *DirectClient {
 	return &DirectClient{
 		fids: make(map[qp.Fid]*Fid),
 	}
 }
 
+// getFid allocates and returns a new Fid.
 func (dc *DirectClient) getFid() (*Fid, error) {
 	dc.fidLock.Lock()
 	defer dc.fidLock.Unlock()
@@ -59,6 +68,7 @@ func (dc *DirectClient) getFid() (*Fid, error) {
 	return nil, ErrNoFidsAvailable
 }
 
+// rmFid removes a Fid from the usage pool.
 func (dc *DirectClient) rmFid(f *Fid) error {
 	dc.fidLock.Lock()
 	defer dc.fidLock.Unlock()
@@ -69,11 +79,13 @@ func (dc *DirectClient) rmFid(f *Fid) error {
 	return ErrNoSuchFid
 }
 
+// Connect starts a DirectClient on the provided io.ReadWriter.
 func (dc *DirectClient) Connect(rw io.ReadWriter) {
 	dc.client = New(rw)
 	go dc.client.Start()
 }
 
+// Stop clunks all fids and terminates the client.
 func (dc *DirectClient) Stop() {
 	for _, fid := range dc.fids {
 		fid.Clunk()
@@ -82,6 +94,7 @@ func (dc *DirectClient) Stop() {
 	dc.client.Stop()
 }
 
+// FlushAll flushes all current requests.
 func (dc *DirectClient) FlushAll() {
 	tags := dc.client.PendingTags()
 	for _, t := range tags {

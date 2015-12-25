@@ -164,6 +164,7 @@ func (c *Client) Start() error {
 	return c.dead
 }
 
+// Stop terminates the reading loop.
 func (c *Client) Stop() {
 	c.dead = ErrStopped
 }

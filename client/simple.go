@@ -12,9 +12,11 @@ import (
 )
 
 const (
+	// DefaultMaxSize is the default size used during protocol negotiation.
 	DefaultMaxSize = 128 * 1024
 )
 
+// SimpleClient errors
 var (
 	ErrNotADirectory          = errors.New("not a directory")
 	ErrNoSuchFile             = errors.New("no such file")
