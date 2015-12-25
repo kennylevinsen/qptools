@@ -7,8 +7,11 @@ import (
 	"github.com/joushou/qptools/fileserver/trees"
 )
 
+// FilePath is used to maintain the current position in a tree.
 type FilePath []trees.File
 
+// Current returns the current location, which is the last element of the
+// path.
 func (fp FilePath) Current() trees.File {
 	if len(fp) == 0 {
 		return nil
@@ -16,6 +19,8 @@ func (fp FilePath) Current() trees.File {
 	return fp[len(fp)-1]
 }
 
+// Parent returns the parent directory, or root if there is no parent. It
+// returns nil if the path is empty.
 func (fp FilePath) Parent() trees.File {
 	if len(fp) == 0 {
 		return nil
@@ -25,6 +30,7 @@ func (fp FilePath) Parent() trees.File {
 	return fp[len(fp)-2]
 }
 
+// Clone creates a clone of the path.
 func (fp FilePath) Clone() FilePath {
 	n := make(FilePath, len(fp))
 	for i := range fp {

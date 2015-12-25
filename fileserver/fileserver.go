@@ -31,10 +31,10 @@ const (
 )
 
 const (
-	// The maximum negotiable message size.
+	// MaxSize is the maximum negotiable message size.
 	MaxSize = 10 * 1024 * 1024
 
-	// The minimum size that will be accepted.
+	// MinSize is the minimum size that will be accepted.
 	MinSize = 128
 )
 

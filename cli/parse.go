@@ -12,7 +12,7 @@ var conv = map[rune]rune{
 	'0': 0,
 }
 
-func ParseCommandLine(str string) ([]string, error) {
+func parseCommandLine(str string) ([]string, error) {
 	var s []string
 	inDoubleQuote := false
 	inSingleQuote := false

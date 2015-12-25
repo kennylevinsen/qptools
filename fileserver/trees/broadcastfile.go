@@ -8,6 +8,8 @@ import (
 	"github.com/joushou/qp"
 )
 
+// ErrTerminatedRead indicates that a read was terminated because the file was
+// closed.
 var ErrTerminatedRead = errors.New("read terminated")
 
 // BroadcastHandle implements the R/W access to the broadcasting mechanism of
@@ -28,10 +30,14 @@ type BroadcastHandle struct {
 	unwanted bool
 }
 
+// Seek is a noop on a BroadcastHandle.
 func (h *BroadcastHandle) Seek(int64, int) (int64, error) {
 	return 0, nil
 }
 
+// Read reads the current message, or if the end is reached, retrieves a new
+// message. If no new messages are available, Read blocks to wait for one. It
+// is woken up, returning ErrTerminatedRead if Close is called on the handle.
 func (h *BroadcastHandle) Read(p []byte) (int, error) {
 	h.RLock()
 	if !h.Readable || h.f == nil {
@@ -66,6 +72,7 @@ func (h *BroadcastHandle) Read(p []byte) (int, error) {
 	return m, nil
 }
 
+// Write adds a message to the BroadcastFile.
 func (h *BroadcastHandle) Write(p []byte) (int, error) {
 	h.RLock()
 	defer h.RUnlock()
@@ -76,6 +83,7 @@ func (h *BroadcastHandle) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// fetch waits for a new message.
 func (h *BroadcastHandle) fetch() ([]byte, error) {
 	// We always read from the channel to avoid complex locking schemes.
 	h.queueCond.L.Lock()
@@ -94,6 +102,7 @@ func (h *BroadcastHandle) fetch() ([]byte, error) {
 	return b, nil
 }
 
+// push pushes a message to the local queue, waking up fetch as necessary.
 func (h *BroadcastHandle) push(b []byte) {
 	h.queueCond.L.Lock()
 	defer h.queueCond.L.Unlock()
@@ -101,6 +110,7 @@ func (h *BroadcastHandle) push(b []byte) {
 	h.queueCond.Signal()
 }
 
+// Close closes the handle, waking up any blocked reads.
 func (h *BroadcastHandle) Close() error {
 	h.Lock()
 	defer h.Unlock()

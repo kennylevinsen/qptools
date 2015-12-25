@@ -29,6 +29,9 @@ var (
 	ErrStopped = errors.New("stopped")
 )
 
+// Client implements a 9P client exposing a blocking rpc-like Send call, while
+// still processing responses out-of-order. A blocking Send can be unblocked
+// by using Ditch.
 type Client struct {
 	RW        io.ReadWriter
 	Proto     qp.Protocol
@@ -132,7 +135,7 @@ func (c *Client) Send(m qp.Message) (qp.Message, error) {
 	return <-ch, nil
 }
 
-// Ditch throws a pending request state away.
+// Ditch throws a pending request state away, and unblocks any Send on the tag.
 func (c *Client) Ditch(t qp.Tag) error {
 	return c.killChannel(t)
 }

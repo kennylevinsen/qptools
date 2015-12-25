@@ -2,6 +2,9 @@ package trees
 
 import "errors"
 
+// ListHandle is a special handle used to list directories that implement the
+// Lister interface. It also provides access logging for directories
+// implementing AccessLogger.
 type ListHandle struct {
 	t      Lister
 	user   string
@@ -26,6 +29,9 @@ func (h *ListHandle) update() error {
 	return nil
 }
 
+// Seek seeks in the directory listing, but seeking to anything but the last
+// read location or to zero is considered an error. Seeking to zero updates
+// the directory listing.
 func (h *ListHandle) Seek(offset int64, whence int) (int64, error) {
 	if h.t == nil {
 		return 0, errors.New("file not open")
@@ -60,6 +66,7 @@ func (h *ListHandle) Seek(offset int64, whence int) (int64, error) {
 	return h.offset, nil
 }
 
+// Read reads the directory listing.
 func (h *ListHandle) Read(p []byte) (int, error) {
 	if h.t == nil {
 		return 0, errors.New("file not open")
@@ -76,10 +83,12 @@ func (h *ListHandle) Read(p []byte) (int, error) {
 	return int(rlen), nil
 }
 
+// Write returns an error, as writing to a directory is not legal.
 func (h *ListHandle) Write(p []byte) (int, error) {
 	return 0, errors.New("cannot write to directory")
 }
 
+// Close closes the handle.
 func (h *ListHandle) Close() error {
 	if a, ok := h.t.(AccessLogger); ok {
 		a.Closed()

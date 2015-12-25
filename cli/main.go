@@ -18,7 +18,7 @@ var (
 	service = kingpin.Flag("service", "service name to use when connecting (aname)").Short('s').String()
 	user    = kingpin.Flag("user", "username to use when connecting (uname)").Short('u').String()
 	address = kingpin.Arg("address", "address to connect to").Required().String()
-	command = StringList(kingpin.Arg("command", "command to execute (disables interactive mode)"))
+	command = stringList(kingpin.Arg("command", "command to execute (disables interactive mode)"))
 )
 
 type slist []string
@@ -36,7 +36,7 @@ func (i *slist) IsCumulative() bool {
 	return true
 }
 
-func StringList(s kingpin.Settings) (target *[]string) {
+func stringList(s kingpin.Settings) (target *[]string) {
 	target = new([]string)
 	s.SetValue((*slist)(target))
 	return
@@ -203,7 +203,7 @@ func main() {
 			}
 		},
 		"get": func(s string) error {
-			args, err := ParseCommandLine(s)
+			args, err := parseCommandLine(s)
 			if err != nil {
 				return err
 			}
@@ -252,7 +252,7 @@ func main() {
 			return nil
 		},
 		"put": func(s string) error {
-			args, err := ParseCommandLine(s)
+			args, err := parseCommandLine(s)
 			if err != nil {
 				return err
 			}

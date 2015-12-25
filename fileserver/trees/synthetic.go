@@ -246,7 +246,7 @@ func NewDetachedHandle(cnt []byte, readable, writable, appendOnly bool) *Detache
 	}
 }
 
-// SynetheticFile is a File implementation that takes care of the more boring
+// SyntheticFile is a File implementation that takes care of the more boring
 // aspects of a file implementation, such as permission-handling and qid/stat
 // generation. By default, it serves the Content slice through a
 // SyntheticROHandle. In most cases, one would embed SyntheticFile and provide
@@ -399,6 +399,7 @@ type LockedHandle struct {
 	Locker sync.Locker
 }
 
+// Close closes the wrapped handle, and unlocks the LockedFile.
 func (of *LockedHandle) Close() error {
 	err := of.ReadWriteSeekCloser.Close()
 	of.Locker.Unlock()
