@@ -149,6 +149,7 @@ func (fs *FileServer) cleanup() {
 			s.mode = 0
 		}
 	}
+	fs.fids = make(map[qp.Fid]*fidState)
 }
 
 // logreq prints the request, formatted after the verbosity level.
@@ -274,20 +275,17 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 	var qids []qp.Qid
 	for i := range names {
 		addToLoc := true
-		requiresExec := true
 		name := names[i]
 		switch name {
 		case ".":
 			// This always succeeds, but we don't want to add it to our location
 			// list.
 			addToLoc = false
-			requiresExec = false
 		case "..":
 			// This also always succeeds, and is either does nothing or shortens
 			// our location list. We don't want anything added to the list
 			// regardless.
 			addToLoc = false
-			requiresExec = false
 			root = newloc.Parent()
 			if len(newloc) > 1 {
 				newloc = newloc[:len(newloc)-1]
@@ -325,17 +323,6 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 				}
 				goto done
 			}
-		}
-
-		if requiresExec {
-			// We open the file to check permissions, as walking would otherwise not
-			// necessarily require OEXEC permissions. This is a bit ugly and an
-			// unnecessarily high amount of work.
-			x, err := root.Open(state.username, qp.OEXEC)
-			if err != nil {
-				goto done
-			}
-			x.Close()
 		}
 
 		if addToLoc {
@@ -396,7 +383,6 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 
 	// Tversion resets everything
 	fs.cleanup()
-	fs.fids = make(map[qp.Fid]*fidState)
 	fs.tags = make(map[qp.Tag]bool)
 	fs.addTag(r.Tag)
 
@@ -561,16 +547,20 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 
 	fs.logreq(r.Tag, r)
 
-	fs.fidLock.Lock()
+	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
-	fs.fidLock.Unlock()
+	fs.fidLock.RUnlock()
 
 	if !exists {
 		fs.sendError(r.Tag, UnknownFid)
 		return
 	}
 
-	if _, exists = fs.fids[r.NewFid]; exists {
+	fs.fidLock.RLock()
+	_, exists = fs.fids[r.NewFid]
+	fs.fidLock.RUnlock()
+
+	if exists {
 		fs.sendError(r.Tag, FidInUse)
 		return
 	}
@@ -582,7 +572,9 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 	}
 
 	if newfidState != nil {
+		fs.fidLock.Lock()
 		fs.fids[r.NewFid] = newfidState
+		fs.fidLock.Unlock()
 	}
 
 	fs.respond(r.Tag, &qp.WalkResponse{
