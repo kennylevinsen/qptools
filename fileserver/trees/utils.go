@@ -77,6 +77,14 @@ type ReadWriteSeekCloser interface {
 	io.Closer
 }
 
+// Authenticator describes a handle that implements authentication service.
+type Authenticator interface {
+	ReadWriteSeekCloser
+
+	// Authenticated informs if the user is authenticated to the service.
+	Authenticated(user, service string) (bool, error)
+}
+
 // Lister allows for ListHandle to read the directory entries, so that a
 // directory does not have to implement reading.
 type Lister interface {

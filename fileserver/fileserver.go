@@ -18,16 +18,21 @@ const (
 	FidInUse           = "fid already in use"
 	TagInUse           = "tag already in use"
 	AuthNotSupported   = "authentication not supported"
+	AuthRequired       = "authentication required"
 	NoSuchService      = "no such service"
 	ResponseTooLong    = "response too long"
 	UnknownFid         = "unknown fid"
 	FidOpen            = "fid is open"
+	FidNotOpen         = "fid is not open"
 	FidNotDirectory    = "fid is not a directory"
 	NoSuchFile         = "file does not exist"
 	InvalidFileName    = "invalid file name"
 	NotOpenForRead     = "file not opened for reading"
 	NotOpenForWrite    = "file not opened for writing"
 	UnsupportedMessage = "message not supported"
+	InvalidOpOnFid     = "invalid operation on file"
+	AfidNotAuthFile    = "afid is not a valid auth file"
+	PermissionDenied   = "permission denied"
 )
 
 const (
@@ -60,7 +65,7 @@ type fidState struct {
 
 	location FilePath
 
-	open     trees.ReadWriteSeekCloser
+	handle   trees.ReadWriteSeekCloser
 	mode     qp.OpenMode
 	username string
 }
@@ -97,10 +102,21 @@ type fidState struct {
 //
 // 6. FileServer does not enforce maxsize (hopefully a temporary limitation).
 type FileServer struct {
-	RW          io.ReadWriter
-	Verbosity   Verbosity
+	// RW is the io.ReadWriter used for communication.
+	RW io.ReadWriter
+
+	// Verbosity is the verbosity level.
+	Verbosity Verbosity
+
+	// DefaultRoot is the root to use if the service isn't in the Roots map.
 	DefaultRoot trees.Dir
-	Roots       map[string]trees.Dir
+
+	// Roots is the map of services to roots to use.
+	Roots map[string]trees.Dir
+
+	// AuthFile is a special file used for auth. The handle of AuthFile must
+	// implement trees.Authenticator.
+	AuthFile trees.File
 
 	// internal
 	writeLock sync.Mutex
@@ -112,13 +128,13 @@ type FileServer struct {
 	// the read locks. Holding it for the full duration of a potentially
 	// blocking call such as read/write will lead to unwanted queueing of
 	// requests, including Flush and Clunk.
+	fidLock sync.RWMutex
+	tagLock sync.Mutex
 
 	// session data
 	maxsize uint32
 	fids    map[qp.Fid]*fidState
-	fidLock sync.RWMutex
 	tags    map[qp.Tag]bool
-	tagLock sync.Mutex
 }
 
 // cleanup handles post-execution cleanup.
@@ -127,9 +143,10 @@ func (fs *FileServer) cleanup() {
 	defer fs.fidLock.Unlock()
 
 	for _, s := range fs.fids {
-		if s.open != nil {
-			s.open.Close()
-			s.open = nil
+		if s.handle != nil {
+			s.handle.Close()
+			s.handle = nil
+			s.mode = 0
 		}
 	}
 }
@@ -230,7 +247,7 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 	state.Lock()
 	defer state.Unlock()
 
-	if state.open != nil {
+	if state.handle != nil {
 		// Can't walk on an open fid.
 		return nil, nil, errors.New(FidOpen)
 	}
@@ -245,46 +262,32 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 		return x, nil, nil
 	}
 
-	cur := state.location.Current()
-	isdir, err := cur.IsDir()
-	if err != nil {
-		// Yes, checking if the file is a directory can fail if the file is
-		// backed to disk.
-		return nil, nil, err
+	root := state.location.Current()
+	if root == nil {
+		return nil, nil, errors.New(InvalidOpOnFid)
 	}
 
-	if !isdir {
-		// NOTE(kl): Isn't a walk to "." legal on a file? Pretty sure this check
-		// should just be killed.
-		return nil, nil, errors.New(FidNotDirectory)
-	}
-
-	root := cur
 	newloc := state.location.Clone()
 	first := true
+	var isdir bool
+	var err error
 	var qids []qp.Qid
 	for i := range names {
-		// We open the file to check permissions, as walking would otherwise not
-		// necessarily require OEXEC permissions. This is a bit ugly and an
-		// unnecessarily high amount of work.
-		x, err := root.Open(state.username, qp.OEXEC)
-		if err != nil {
-			goto done
-		}
-		x.Close()
-
 		addToLoc := true
+		requiresExec := true
 		name := names[i]
 		switch name {
 		case ".":
 			// This always succeeds, but we don't want to add it to our location
 			// list.
 			addToLoc = false
+			requiresExec = false
 		case "..":
 			// This also always succeeds, and is either does nothing or shortens
 			// our location list. We don't want anything added to the list
 			// regardless.
 			addToLoc = false
+			requiresExec = false
 			root = newloc.Parent()
 			if len(newloc) > 1 {
 				newloc = newloc[:len(newloc)-1]
@@ -322,6 +325,17 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 				}
 				goto done
 			}
+		}
+
+		if requiresExec {
+			// We open the file to check permissions, as walking would otherwise not
+			// necessarily require OEXEC permissions. This is a bit ugly and an
+			// unnecessarily high amount of work.
+			x, err := root.Open(state.username, qp.OEXEC)
+			if err != nil {
+				goto done
+			}
+			x.Close()
 		}
 
 		if addToLoc {
@@ -402,7 +416,43 @@ func (fs *FileServer) auth(r *qp.AuthRequest) {
 		return
 	}
 	fs.logreq(r.Tag, r)
-	fs.sendError(r.Tag, AuthNotSupported)
+
+	if fs.AuthFile == nil {
+		fs.sendError(r.Tag, AuthNotSupported)
+		return
+	}
+
+	fs.fidLock.Lock()
+	defer fs.fidLock.Unlock()
+
+	if _, exists := fs.fids[r.AuthFid]; exists {
+		fs.sendError(r.Tag, FidInUse)
+		return
+	}
+
+	handle, err := fs.AuthFile.Open(r.Username, qp.ORDWR)
+	if err != nil {
+		fs.sendError(r.Tag, err.Error())
+		return
+	}
+
+	s := &fidState{
+		username: r.Username,
+		handle:   handle,
+	}
+
+	fs.fids[r.AuthFid] = s
+
+	qid := qp.Qid{
+		Version: ^uint32(0),
+		Path:    ^uint64(0),
+		Type:    qp.QTAUTH,
+	}
+
+	fs.respond(r.Tag, &qp.AuthResponse{
+		Tag:     r.Tag,
+		AuthQid: qid,
+	})
 }
 
 func (fs *FileServer) attach(r *qp.AttachRequest) {
@@ -417,6 +467,45 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 
 	if _, exists := fs.fids[r.Fid]; exists {
 		fs.sendError(r.Tag, FidInUse)
+		return
+	}
+
+	switch {
+	case fs.AuthFile != nil && r.AuthFid != qp.NOFID:
+		// There's an authfile and an authfid - check it.
+		as, exists := fs.fids[r.AuthFid]
+		if !exists {
+			fs.sendError(r.Tag, UnknownFid)
+			return
+		}
+
+		if as.handle == nil {
+			fs.sendError(r.Tag, FidNotOpen)
+			return
+		}
+
+		auther, ok := as.handle.(trees.Authenticator)
+		if !ok {
+			fs.sendError(r.Tag, AfidNotAuthFile)
+			return
+		}
+
+		authed, err := auther.Authenticated(r.Username, r.Service)
+		if err != nil {
+			fs.sendError(r.Tag, err.Error())
+			return
+		}
+
+		if !authed {
+			fs.sendError(r.Tag, PermissionDenied)
+			return
+		}
+	case fs.AuthFile == nil && r.AuthFid != qp.NOFID:
+		// There's no authfile, but an authfid was provided.
+		fs.sendError(r.Tag, AuthNotSupported)
+		return
+	case fs.AuthFile != nil && r.AuthFid == qp.NOFID:
+		fs.sendError(r.Tag, AuthRequired)
 		return
 	}
 
@@ -522,12 +611,17 @@ func (fs *FileServer) open(r *qp.OpenRequest) {
 	state.Lock()
 	defer state.Unlock()
 
-	if state.open != nil {
+	if state.handle != nil {
 		fs.sendError(r.Tag, FidOpen)
 		return
 	}
 
 	l := state.location.Current()
+	if l == nil {
+		fs.sendError(r.Tag, InvalidOpOnFid)
+		return
+	}
+
 	qid, err := l.Qid()
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
@@ -540,7 +634,7 @@ func (fs *FileServer) open(r *qp.OpenRequest) {
 		return
 	}
 
-	state.open = openfile
+	state.handle = openfile
 	state.mode = r.Mode
 	fs.respond(r.Tag, &qp.OpenResponse{
 		Tag: r.Tag,
@@ -568,7 +662,7 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 	state.Lock()
 	defer state.Unlock()
 
-	if state.open != nil {
+	if state.handle != nil {
 		fs.sendError(r.Tag, FidOpen)
 		return
 	}
@@ -579,6 +673,11 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 	}
 
 	cur := state.location.Current()
+	if cur == nil {
+		fs.sendError(r.Tag, InvalidOpOnFid)
+		return
+	}
+
 	isdir, err := cur.IsDir()
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
@@ -610,7 +709,7 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 	}
 
 	state.location = append(state.location, l)
-	state.open = x
+	state.handle = x
 	state.mode = r.Mode
 
 	fs.respond(r.Tag, &qp.CreateResponse{
@@ -638,11 +737,16 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 	}
 
 	state.RLock()
-	open := state.open
+	handle := state.handle
 	mode := state.mode
 	state.RUnlock()
 
-	if open == nil || ((mode&3 != qp.OREAD) && (mode&3 != qp.ORDWR)) {
+	if handle == nil {
+		fs.sendError(r.Tag, FidNotOpen)
+		return
+	}
+
+	if (mode&3 != qp.OREAD) && (mode&3 != qp.ORDWR) {
 		fs.sendError(r.Tag, NotOpenForRead)
 		return
 	}
@@ -655,13 +759,13 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 
 	b := make([]byte, count)
 
-	_, err := open.Seek(int64(r.Offset), 0)
+	_, err := handle.Seek(int64(r.Offset), 0)
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return
 	}
 
-	n, err := open.Read(b)
+	n, err := handle.Read(b)
 	if err == io.EOF {
 		n = 0
 	} else if err != nil {
@@ -695,22 +799,27 @@ func (fs *FileServer) write(r *qp.WriteRequest) {
 	}
 
 	state.RLock()
-	open := state.open
+	handle := state.handle
 	mode := state.mode
 	state.RUnlock()
 
-	if open == nil || ((mode&3 != qp.OWRITE) && (mode&3 != qp.ORDWR)) {
+	if handle == nil {
+		fs.sendError(r.Tag, FidNotOpen)
+		return
+	}
+
+	if (mode&3 != qp.OWRITE) && (mode&3 != qp.ORDWR) {
 		fs.sendError(r.Tag, NotOpenForWrite)
 		return
 	}
 
-	_, err := open.Seek(int64(r.Offset), 0)
+	_, err := handle.Seek(int64(r.Offset), 0)
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return
 	}
 
-	n, err := open.Write(r.Data)
+	n, err := handle.Write(r.Data)
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return
@@ -743,9 +852,9 @@ func (fs *FileServer) clunk(r *qp.ClunkRequest) {
 	state.Lock()
 	defer state.Unlock()
 
-	if state.open != nil {
-		state.open.Close()
-		state.open = nil
+	if state.handle != nil {
+		state.handle.Close()
+		state.handle = nil
 	}
 
 	fs.respond(r.Tag, &qp.ClunkResponse{
@@ -774,9 +883,9 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 	state.Lock()
 	defer state.Unlock()
 
-	if state.open != nil {
-		state.open.Close()
-		state.open = nil
+	if state.handle != nil {
+		state.handle.Close()
+		state.handle = nil
 	}
 
 	if len(state.location) <= 1 {
@@ -823,7 +932,7 @@ func (fs *FileServer) stat(r *qp.StatRequest) {
 	state.RUnlock()
 
 	if l == nil {
-		fs.sendError(r.Tag, NoSuchFile)
+		fs.sendError(r.Tag, InvalidOpOnFid)
 		return
 	}
 
@@ -861,7 +970,7 @@ func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 
 	l := state.location.Current()
 	if l == nil {
-		fs.sendError(r.Tag, NoSuchFile)
+		fs.sendError(r.Tag, InvalidOpOnFid)
 		return
 	}
 
