@@ -42,20 +42,6 @@ func stringList(s kingpin.Settings) (target *[]string) {
 	return
 }
 
-func usage() {
-	fmt.Printf(`qptools 9P cli
-
-Usage: %s address user [service]
-
-    address     The address to connect to.
-    user        The user to connect as.
-    service     The service to request (defaults to "").
-
-Example: %s localhost:9999 glenda
-
-`, os.Args[0], os.Args[0])
-}
-
 func permToString(m qp.FileMode) string {
 	x := []byte("drwxrwxrwx")
 	if m&qp.DMDIR == 0 {
