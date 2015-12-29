@@ -108,14 +108,10 @@ func (t *RAMTree) Stat() (qp.Stat, error) {
 	if err != nil {
 		return qp.Stat{}, err
 	}
-	n, err := t.Name()
-	if err != nil {
-		return qp.Stat{}, err
-	}
 	return qp.Stat{
 		Qid:   q,
 		Mode:  t.permissions | qp.DMDIR,
-		Name:  n,
+		Name:  t.name,
 		UID:   t.user,
 		GID:   t.group,
 		MUID:  t.muser,
