@@ -63,18 +63,23 @@ func (mt *MixTree) Stat() (qp.Stat, error) {
 	return mt.Top.Stat()
 }
 
+// SetLength sets the content length of Top.
 func (mt *MixTree) SetLength(user string, length uint64) error {
 	return mt.Top.SetLength(user, length)
 }
 
+// SetName sets the name of Top. This must only be called from Rename on a
+// directory.
 func (mt *MixTree) SetName(user, name string) error {
 	return mt.Top.SetName(user, name)
 }
 
+// SetOwner sets the owner of Top.
 func (mt *MixTree) SetOwner(user, UID, GID string) error {
 	return mt.Top.SetOwner(user, UID, GID)
 }
 
+// SetMode sets the mode and permissions of Top.
 func (mt *MixTree) SetMode(user string, mode qp.FileMode) error {
 	return mt.Top.SetMode(user, mode)
 }
