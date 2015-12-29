@@ -63,9 +63,20 @@ func (mt *MixTree) Stat() (qp.Stat, error) {
 	return mt.Top.Stat()
 }
 
-// WriteStat writes to Top's stat.
-func (mt *MixTree) WriteStat(s qp.Stat) error {
-	return mt.Top.WriteStat(s)
+func (mt *MixTree) SetLength(user string, length uint64) error {
+	return mt.Top.SetLength(user, length)
+}
+
+func (mt *MixTree) SetName(user, name string) error {
+	return mt.Top.SetName(user, name)
+}
+
+func (mt *MixTree) SetOwner(user, UID, GID string) error {
+	return mt.Top.SetOwner(user, UID, GID)
+}
+
+func (mt *MixTree) SetMode(user string, mode qp.FileMode) error {
+	return mt.Top.SetMode(user, mode)
 }
 
 // IsDir always returns true.

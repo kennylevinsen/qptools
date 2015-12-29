@@ -98,16 +98,24 @@ func (pf *ProxyFile) Name() (string, error) {
 	return filepath.Base(pf.path), nil
 }
 
-func (pf *ProxyFile) WriteStat(s qp.Stat) error {
-	n := filepath.Base(pf.path)
-	if s.Name != "" && s.Name != n {
-		d := filepath.Dir(pf.path)
-		pf.path = filepath.Join(d, s.Name)
-	}
+func (pf *ProxyFile) SetLength(user string, length uint64) error {
+	return nil
+}
 
-	// NOTE(kl): We ignore everything else. This is incorrect, but most things
-	// don't make sense to touch, and the actual rename has already ocurred
-	// anyway.
+func (pf *ProxyFile) SetName(user, name string) error {
+	n := filepath.Base(pf.path)
+	if name != "" && name != n {
+		d := filepath.Dir(pf.path)
+		pf.path = filepath.Join(d, name)
+	}
+	return nil
+}
+
+func (pf *ProxyFile) SetOwner(user, UID, GID string) error {
+	return nil
+}
+
+func (pf *ProxyFile) SetMode(user string, mode qp.FileMode) error {
 	return nil
 }
 

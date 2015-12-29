@@ -45,10 +45,10 @@ func setStat(user string, e trees.File, parent trees.Dir, nstat qp.Stat) error {
 		return err
 	}
 
-	needWrite := false
-	rename := false
-	curname := ""
-	newname := ""
+	length := false
+	name := false
+	mode := false
+	owner := false
 
 	if nstat.Type != ^uint16(0) && nstat.Type != ostat.Type {
 		return errors.New("it is illegal to modify type")
@@ -56,22 +56,14 @@ func setStat(user string, e trees.File, parent trees.Dir, nstat qp.Stat) error {
 	if nstat.Dev != ^uint32(0) && nstat.Dev != ostat.Dev {
 		return errors.New("it is illegal to modify dev")
 	}
-	if nstat.Mode != ^qp.FileMode(0) && nstat.Mode != ostat.Mode {
-		// TODO Ensure we don't flip DMDIR
-		if user != ostat.UID {
-			return errors.New("only owner can change mode")
-		}
-		ostat.Mode = ostat.Mode&qp.DMDIR | nstat.Mode & ^qp.DMDIR
+	if nstat.MUID != "" && nstat.MUID != ostat.MUID {
+		return errors.New("it is illegal to modify muid")
 	}
 	if nstat.Atime != ^uint32(0) && nstat.Atime != ostat.Atime {
 		return errors.New("it is illegal to modify atime")
 	}
-	if nstat.Mtime != ^uint32(0) && nstat.Mtime != ostat.Mtime {
-		if user != ostat.UID {
-			return errors.New("only owner can change mtime")
-		}
-		needWrite = true
-		ostat.Mtime = nstat.Mtime
+	if parent == nil && nstat.Name != "" && nstat.Name != ostat.Name {
+		return errors.New("it is illegal to rename root")
 	}
 	if nstat.Length != ^uint64(0) && nstat.Length != ostat.Length {
 		if ostat.Mode&qp.DMDIR != 0 {
@@ -80,45 +72,47 @@ func setStat(user string, e trees.File, parent trees.Dir, nstat qp.Stat) error {
 		if nstat.Length > ostat.Length {
 			return errors.New("cannot extend length")
 		}
-		ostat.Length = nstat.Length
+		length = true
 	}
 	if nstat.Name != "" && nstat.Name != ostat.Name {
-		if parent != nil {
-			curname = ostat.Name
-			newname = nstat.Name
-			ostat.Name = nstat.Name
-			rename = true
-		} else {
-			return errors.New("it is illegal to rename root")
-		}
+		name = true
 	}
-	if nstat.UID != "" && nstat.UID != ostat.UID {
-		// NOTE: It is normally illegal to change the file owner, but we are a bit more relaxed.
-		ostat.UID = nstat.UID
-		needWrite = true
+	if (nstat.UID != "" && nstat.UID != ostat.UID) || (nstat.GID != "" && nstat.GID != ostat.GID) {
+		owner = true
 	}
-	if nstat.GID != "" && nstat.GID != ostat.GID {
-		ostat.GID = nstat.GID
-		needWrite = true
-	}
-	if nstat.MUID != "" && nstat.MUID != ostat.MUID {
-		return errors.New("it is illegal to modify muid")
+	if nstat.Mode != ^qp.FileMode(0) && nstat.Mode != ostat.Mode {
+		mode = true
 	}
 
-	if needWrite {
-		x, err := e.Open(user, qp.OWRITE)
-		if err != nil {
-			return err
-		}
-		x.Close()
+	if nstat.Mtime != ^uint32(0) && nstat.Mtime != ostat.Mtime {
+		// We ignore mtime changes ATM. Only owner can change mtime.
 	}
 
-	// Try to perform the rename
-	if rename {
-		if err := parent.Rename(user, curname, newname); err != nil {
+	if mode {
+		if err := e.SetMode(user, ostat.Mode&qp.DMDIR | nstat.Mode & ^qp.DMDIR); err != nil {
 			return err
 		}
 	}
-
-	return e.WriteStat(ostat)
+	if owner {
+		if err := e.SetOwner(user, nstat.UID, nstat.GID); err != nil {
+			e.SetMode(user, ostat.Mode)
+			return err
+		}
+	}
+	if name {
+		if err := parent.Rename(user, ostat.Name, nstat.Name); err != nil {
+			e.SetMode(user, ostat.Mode)
+			e.SetOwner(user, ostat.UID, ostat.GID)
+			return err
+		}
+	}
+	if length {
+		if err := e.SetLength(user, nstat.Length); err != nil {
+			e.SetMode(user, ostat.Mode)
+			e.SetOwner(user, ostat.UID, ostat.GID)
+			parent.Rename(user, nstat.Name, ostat.Name)
+			return err
+		}
+	}
+	return nil
 }

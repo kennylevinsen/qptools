@@ -29,19 +29,30 @@ type File interface {
 	// the mode requested if the user is permitted to do so.
 	Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error)
 
-	// QId returns the qid of the file.
+	// Qid returns the qid of the file.
 	Qid() (qp.Qid, error)
 
 	// Stat returns the stat structure of the file.
 	Stat() (qp.Stat, error)
 
-	// WriteStat changes the stat structure of the file.
-	WriteStat(qp.Stat) error
+	// SetLength sets the length of the file, if possible.
+	SetLength(user string, length uint64) error
+
+	// SetName sets the name of the file. This must only be called from the
+	// Dir's Rename method, to ensure agreement between dir and file.
+	SetName(user, name string) error
+
+	// SetOwner changes the user and group of the file.
+	SetOwner(user, UID, GID string) error
+
+	// SetMode changes the mode and permissions of the file.
+	SetMode(user string, mode qp.FileMode) error
 
 	// IsDir returns whether or not the file is a directory.
 	IsDir() (bool, error)
 
-	// CanRemove returns if the file can be removed.
+	// CanRemove returns if the file can be removed. An example of a negative
+	// response would be a directory with content.
 	CanRemove() (bool, error)
 }
 

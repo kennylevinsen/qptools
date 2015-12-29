@@ -50,15 +50,53 @@ func (t *RAMTree) Name() (string, error) {
 	return t.name, nil
 }
 
-func (t *RAMTree) WriteStat(s qp.Stat) error {
+func (t *RAMTree) SetLength(user string, length uint64) error {
+	if length != 0 {
+		return errors.New("cannot set length of directory")
+	}
+	return nil
+}
+
+func (t *RAMTree) SetName(user, name string) error {
 	t.Lock()
 	defer t.Unlock()
-	t.name = s.Name
-	t.user = s.UID
-	t.group = s.GID
-	t.permissions = s.Mode
-	t.atime = time.Now()
+
+	t.name = name
 	t.mtime = time.Now()
+	t.atime = t.mtime
+	t.version++
+	return nil
+}
+
+func (t *RAMTree) SetOwner(user, UID, GID string) error {
+	if !t.CanOpen(user, qp.OWRITE) {
+		return errors.New("permission denied")
+	}
+	t.Lock()
+	defer t.Unlock()
+
+	if UID != "" {
+		t.user = UID
+	}
+	if GID != "" {
+		t.group = GID
+	}
+	t.mtime = time.Now()
+	t.atime = t.mtime
+	t.version++
+	return nil
+}
+
+func (t *RAMTree) SetMode(user string, mode qp.FileMode) error {
+	if user != t.user || !t.CanOpen(user, qp.OWRITE) {
+		return errors.New("permission denied")
+	}
+	t.Lock()
+	defer t.Unlock()
+
+	t.permissions = mode | qp.DMDIR
+	t.mtime = time.Now()
+	t.atime = t.mtime
 	t.version++
 	return nil
 }
@@ -126,15 +164,20 @@ func (t *RAMTree) List(user string) ([]qp.Stat, error) {
 	return s, nil
 }
 
-func (t *RAMTree) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
-	t.Lock()
-	defer t.Unlock()
+func (t *RAMTree) CanOpen(user string, mode qp.OpenMode) bool {
+	t.RLock()
+	defer t.RUnlock()
 	owner := t.user == user
+	return permCheck(owner, t.permissions, mode)
+}
 
-	if !permCheck(owner, t.permissions, mode) {
+func (t *RAMTree) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
+	if !t.CanOpen(user, mode) {
 		return nil, errors.New("access denied")
 	}
 
+	t.Lock()
+	defer t.Unlock()
 	t.atime = time.Now()
 	t.opens++
 	return &ListHandle{
@@ -203,12 +246,15 @@ func (t *RAMTree) Rename(user, oldname, newname string) error {
 		return errors.New("file already exists")
 	}
 
-	owner := t.user == user
-	if !permCheck(owner, t.permissions, qp.OWRITE) {
-		return errors.New("access denied")
+	if !t.CanOpen(user, qp.OWRITE) {
+		return errors.New("permission denied")
 	}
 
-	t.tree[newname] = t.tree[oldname]
+	elem := t.tree[oldname]
+	if err := elem.SetName(user, newname); err != nil {
+		return err
+	}
+	t.tree[newname] = elem
 	delete(t.tree, oldname)
 	return nil
 }

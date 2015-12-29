@@ -282,26 +282,69 @@ func (f *SyntheticFile) Qid() (qp.Qid, error) {
 	}, nil
 }
 
-// WriteStat writes a new stat struct. The file can be shortened, but not
-// extended. Length cannot be changed if FakeLength is in use. If the file has
-// been renamed, the directory's Rename must have been called to handle the
-// actual renaming first.
-func (f *SyntheticFile) WriteStat(s qp.Stat) error {
+// SetLength sets the length of the file content.
+func (f *SyntheticFile) SetLength(user string, length uint64) error {
+	if !f.CanOpen(user, qp.OWRITE) {
+		return errors.New("permission denied")
+	}
 	f.Lock()
 	defer f.Unlock()
-	if s.Length != ^uint64(0) {
-		if s.Length > uint64(len(f.Content)) {
-			return errors.New("cannot extend length")
-		}
-		if f.FakeLength {
-			return errors.New("cannot change fake length")
-		}
-		f.Content = f.Content[:s.Length]
+	if length > uint64(len(f.Content)) {
+		return errors.New("cannot extend length")
 	}
-	f.Filename = s.Name
-	f.UID = s.UID
-	f.GID = s.GID
-	f.Permissions = s.Mode
+	if f.FakeLength {
+		return errors.New("cannot change fake length")
+	}
+	f.Content = f.Content[:length]
+	f.Mtime = time.Now()
+	f.Atime = f.Mtime
+	f.Version++
+	return nil
+}
+
+// SetName sets the name of the file. This must only be called from Rename on
+// a directory.
+func (f *SyntheticFile) SetName(user, name string) error {
+	f.Lock()
+	defer f.Unlock()
+
+	f.Filename = name
+	f.Mtime = time.Now()
+	f.Atime = f.Mtime
+	f.Version++
+	return nil
+}
+
+// SetOwner sets the owner.
+func (f *SyntheticFile) SetOwner(user, UID, GID string) error {
+	if !f.CanOpen(user, qp.OWRITE) {
+		return errors.New("permission denied")
+	}
+	f.Lock()
+	defer f.Unlock()
+
+	if UID != "" {
+		f.UID = UID
+	}
+	if GID != "" {
+		f.GID = GID
+	}
+
+	f.Mtime = time.Now()
+	f.Atime = f.Mtime
+	f.Version++
+	return nil
+}
+
+// SetMode sets the mode and permissions.
+func (f *SyntheticFile) SetMode(user string, mode qp.FileMode) error {
+	if user != f.UID || !f.CanOpen(user, qp.OWRITE) {
+		return errors.New("permission denied")
+	}
+	f.Lock()
+	defer f.Unlock()
+
+	f.Permissions = mode
 	f.Mtime = time.Now()
 	f.Atime = f.Mtime
 	f.Version++
