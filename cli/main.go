@@ -168,7 +168,6 @@ func main() {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "Showing content of %s\n", s)
 			fmt.Printf("%s", strs)
 			fmt.Fprintf(os.Stderr, "\n")
 			return nil
@@ -209,7 +208,6 @@ func main() {
 				return err
 			}
 
-			fmt.Fprintf(os.Stderr, "Checking: %s", s)
 			stat, err := c.Stat(*remote)
 			if err != nil {
 				return err
@@ -217,7 +215,6 @@ func main() {
 			if stat.Mode&qp.DMDIR != 0 {
 				return errors.New("file is a directory")
 			}
-			fmt.Fprintf(os.Stderr, " - Done.\n")
 
 			fmt.Fprintf(os.Stderr, "Downloading: %s to %s [%dB]", remote, local, stat.Length)
 			strs, err := c.Read(*remote)
@@ -225,7 +222,6 @@ func main() {
 				return err
 			}
 			fmt.Fprintf(os.Stderr, " - Downloaded %dB.\n", len(strs))
-			fmt.Fprintf(os.Stderr, "Writing data to %s", *local)
 			for len(strs) > 0 {
 				n, err := f.Write(strs)
 				if err != nil {
@@ -233,7 +229,6 @@ func main() {
 				}
 				strs = strs[n:]
 			}
-			fmt.Fprintf(os.Stderr, " - Done.\n")
 
 			return nil
 		},
@@ -256,9 +251,7 @@ func main() {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "Checking: %s", target)
 			stat, err := c.Stat(target)
-			fmt.Fprintf(os.Stderr, " - Done.\n")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "File does not exist. Creating file: %s", target)
 				err := c.Create(target, false)
@@ -282,6 +275,21 @@ func main() {
 			}
 			fmt.Fprintf(os.Stderr, " - Done.\n")
 			return nil
+		},
+		"mv": func(s string) error {
+			args, err := parseCommandLine(s)
+			if err != nil {
+				return err
+			}
+			cmd := kingpin.New("mv", "")
+			source := cmd.Arg("source", "source filename").Required().String()
+			destination := cmd.Arg("destination", "destination filename").Required().String()
+			_, err = cmd.Parse(args)
+			if err != nil {
+				return err
+			}
+
+			return c.Rename(*source, *destination)
 		},
 		"mkdir": func(s string) error {
 			if !(len(s) > 0 && s[0] == '/') {
