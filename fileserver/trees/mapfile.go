@@ -1,38 +1,10 @@
 package trees
 
 import (
-	"errors"
 	"sync"
 
 	"github.com/joushou/qp"
 )
-
-// MapHandle provides the reading/writing interface to a MapFile.
-type MapHandle struct {
-	*DetachedHandle
-	f         *MapFile
-	cmdbuffer []byte
-}
-
-// Seek performs the requested seek, but updates the representation of the map
-// when seeking to 0.
-func (h *MapHandle) Seek(offset int64, whence int) (int64, error) {
-	off, err := h.DetachedHandle.Seek(offset, whence)
-	if off == 0 {
-		// We update the map when you seek to 0
-		h.Content = h.f.renderMap()
-	}
-	return off, err
-}
-
-// Write adds the written data to the internal command buffer, processing all
-// complete assignments.
-func (h *MapHandle) Write(p []byte) (int, error) {
-	h.Lock()
-	defer h.Unlock()
-	h.cmdbuffer = h.f.query(append(h.cmdbuffer, p...))
-	return len(p), nil
-}
 
 // MapFile provides locked map[string]string storage. Reading the file dumps
 // the map, with each entry being written as "key=val", each item separated by
@@ -40,7 +12,7 @@ func (h *MapHandle) Write(p []byte) (int, error) {
 // deletes key. All characters are considered legal, with the exception that a
 // key cannot contain "=", and that a value cannot contain "\n".
 type MapFile struct {
-	*SyntheticFile
+	*CallbackFile
 	store     map[string]string
 	storelock sync.Mutex
 }
@@ -99,26 +71,11 @@ func (f *MapFile) query(cmd []byte) []byte {
 	return cmd[consumed:]
 }
 
-// Open returns a MapHandle.
-func (f *MapFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
-	if !f.CanOpen(user, mode) {
-		return nil, errors.New("access denied")
-	}
-
-	return &MapHandle{
-		DetachedHandle: &DetachedHandle{
-			Readable:   true,
-			Writable:   true,
-			AppendOnly: true,
-		},
-		f: f,
-	}, nil
-}
-
 // NewMapFile returns an initialised MapFile.
 func NewMapFile(name string, perm qp.FileMode, user, group string) *MapFile {
-	return &MapFile{
-		SyntheticFile: NewSyntheticFile(name, 0666, user, group),
-		store:         make(map[string]string),
+	m := &MapFile{
+		store: make(map[string]string),
 	}
+	m.CallbackFile = NewCallbackFile(name, 0666, user, group, m.renderMap, m.query)
+	return m
 }
