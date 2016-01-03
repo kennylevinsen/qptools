@@ -211,7 +211,7 @@ func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, e
 
 	if isdir {
 		return &ListHandle{
-			t:    pf,
+			dir:  pf,
 			user: user,
 		}, nil
 	}
@@ -264,13 +264,12 @@ func (pf *ProxyFile) Create(_, name string, perms qp.FileMode) (File, error) {
 }
 
 func (pf *ProxyFile) Remove(_, name string) error {
-	p := filepath.Join(pf.path, name)
-	return os.Remove(filepath.Join(pf.root, p))
+	return os.Remove(filepath.Join(pf.root, pf.path, name))
 }
 
 func (pf *ProxyFile) Rename(_, oldname, newname string) error {
-	op := filepath.Join(pf.root, filepath.Join(pf.path, oldname))
-	np := filepath.Join(pf.root, filepath.Join(pf.path, newname))
+	op := filepath.Join(pf.root, pf.path, oldname)
+	np := filepath.Join(pf.root, pf.path, newname)
 	return os.Rename(op, np)
 }
 
@@ -281,7 +280,7 @@ func (pf *ProxyFile) IsDir() (bool, error) {
 	return pf.info.IsDir(), nil
 }
 
-func NewProxyTree(root, path, user, group string) Dir {
+func NewProxyFile(root, path, user, group string) *ProxyFile {
 	return &ProxyFile{
 		root:  root,
 		path:  path,

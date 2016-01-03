@@ -53,7 +53,7 @@ func main() {
 		}
 	}
 
-	root := trees.NewProxyTree(path, "", user, group)
+	root := trees.NewProxyFile(path, "", user, group)
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("Unable to listen: %v", err)
