@@ -57,7 +57,7 @@ func main() {
 		}
 	}
 
-	root := trees.NewRAMTree("/", 0777, user, group)
+	root := trees.NewSyntheticDir("/", 0777, user, group)
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("Unable to listen: %v", err)

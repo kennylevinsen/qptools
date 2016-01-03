@@ -58,7 +58,7 @@ func (f *fakeHandle) Authenticated(user, service string) (bool, error) {
 }
 
 type fakeFile struct {
-	trees.RAMTree
+	trees.SyntheticDir
 	opened   int
 	openLock sync.Mutex
 	rwLock   sync.RWMutex
