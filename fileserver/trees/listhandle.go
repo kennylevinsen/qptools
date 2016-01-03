@@ -6,14 +6,14 @@ import "errors"
 // Lister interface. It also provides access logging for directories
 // implementing AccessLogger.
 type ListHandle struct {
-	t      Lister
+	dir    Lister
 	user   string
 	buffer []byte
 	offset int64
 }
 
 func (h *ListHandle) update() error {
-	s, err := h.t.List(h.user)
+	s, err := h.dir.List(h.user)
 	if err != nil {
 		return err
 	}
@@ -33,7 +33,7 @@ func (h *ListHandle) update() error {
 // read location or to zero is considered an error. Seeking to zero updates
 // the directory listing.
 func (h *ListHandle) Seek(offset int64, whence int) (int64, error) {
-	if h.t == nil {
+	if h.dir == nil {
 		return 0, errors.New("file not open")
 	}
 	length := int64(len(h.buffer))
@@ -60,7 +60,7 @@ func (h *ListHandle) Seek(offset int64, whence int) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if a, ok := h.t.(AccessLogger); ok {
+	if a, ok := h.dir.(AccessLogger); ok {
 		a.Accessed()
 	}
 	return h.offset, nil
@@ -68,7 +68,7 @@ func (h *ListHandle) Seek(offset int64, whence int) (int64, error) {
 
 // Read reads the directory listing.
 func (h *ListHandle) Read(p []byte) (int, error) {
-	if h.t == nil {
+	if h.dir == nil {
 		return 0, errors.New("file not open")
 	}
 	rlen := int64(len(p))
@@ -77,7 +77,7 @@ func (h *ListHandle) Read(p []byte) (int, error) {
 	}
 	copy(p, h.buffer[h.offset:rlen+h.offset])
 	h.offset += rlen
-	if a, ok := h.t.(AccessLogger); ok {
+	if a, ok := h.dir.(AccessLogger); ok {
 		a.Accessed()
 	}
 	return int(rlen), nil
@@ -90,9 +90,9 @@ func (h *ListHandle) Write(p []byte) (int, error) {
 
 // Close closes the handle.
 func (h *ListHandle) Close() error {
-	if a, ok := h.t.(AccessLogger); ok {
+	if a, ok := h.dir.(AccessLogger); ok {
 		a.Closed()
 	}
-	h.t = nil
+	h.dir = nil
 	return nil
 }
