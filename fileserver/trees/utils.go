@@ -99,6 +99,8 @@ type Authenticator interface {
 // Lister allows for ListHandle to read the directory entries, so that a
 // directory does not have to implement reading.
 type Lister interface {
+	Dir
+
 	List(user string) ([]qp.Stat, error)
 }
 
