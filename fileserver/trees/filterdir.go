@@ -14,6 +14,20 @@ type FilterDir struct {
 	FilteredNames map[string]bool
 	Whitelist     bool
 	FilterLock    sync.RWMutex
+	Filename      string
+}
+
+func (fd *FilterDir) Name() (string, error) {
+	return fd.Filename, nil
+}
+
+func (fd *FilterDir) Stat() (qp.Stat, error) {
+	s, err := fd.Lister.Stat()
+	if err != nil {
+		return s, err
+	}
+	s.Name = fd.Filename
+	return s, err
 }
 
 // Things to mask:
@@ -89,8 +103,9 @@ func (fd *FilterDir) Remove(user, name string) error {
 	return fd.Lister.Remove(user, name)
 }
 
-func NewFilterDir(dir Lister) *FilterDir {
+func NewFilterDir(name string, dir Lister) *FilterDir {
 	return &FilterDir{
-		Lister: dir,
+		Filename: name,
+		Lister:   dir,
 	}
 }
