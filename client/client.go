@@ -9,171 +9,478 @@ import (
 )
 
 var (
-	// ErrTagInUse indicates that a tag is already being used for still active
-	// request.
-	ErrTagInUse = errors.New("tag already in use")
+	// ErrWeirdResponse indicates that a response type was unexpected. That is,
+	// not the response fitting the request or ErrorResponse.
+	ErrWeirdResponse = errors.New("weird response")
 
-	// ErrNoSuchTag indicates that the tag in a response from a server was not
-	// known to be associated with a pending request.
-	ErrNoSuchTag = errors.New("tag does not exist")
+	// ErrNoFidsAvailable indicate that the pool of fids have been depleted,
+	// due to 0xFFFE files being open.
+	ErrNoFidsAvailable = errors.New("no available fids")
 
-	// ErrInvalidResponse indicates that the response type did not make sense
-	// for the request.
-	ErrInvalidResponse = errors.New("invalid response")
-
-	// ErrTagPoolDepleted indicates that all possible tags are currently in
-	// use.
-	ErrTagPoolDepleted = errors.New("tag pool depleted")
-
-	// ErrStopped indicate that the client was stopped.
-	ErrStopped = errors.New("stopped")
+	// ErrNoSuchFid indicates that the fid does not exist.
+	ErrNoSuchFid = errors.New("no such fid")
 )
 
-// Client implements a 9P client exposing a blocking rpc-like Send call, while
-// still processing responses out-of-order. A blocking Send can be unblocked
-// by using Ditch.
-type Client struct {
-	RW        io.ReadWriter
-	Proto     qp.Protocol
-	dead      error
-	queueLock sync.RWMutex
-	queue     map[qp.Tag]chan qp.Message
-	writeLock sync.RWMutex
-	nextTag   qp.Tag
-}
-
-func (c *Client) getChannel(t qp.Tag) (chan qp.Message, error) {
-	c.queueLock.Lock()
-	defer c.queueLock.Unlock()
-
-	if _, exists := c.queue[t]; exists {
-		return nil, ErrTagInUse
+func toError(m qp.Message) error {
+	if eresp, ok := m.(*qp.ErrorResponse); ok {
+		return errors.New(eresp.Error)
 	}
-
-	ch := make(chan qp.Message, 1)
-	c.queue[t] = ch
-	return ch, nil
-}
-
-func (c *Client) killChannel(t qp.Tag) error {
-	c.queueLock.Lock()
-	defer c.queueLock.Unlock()
-	ch, exists := c.queue[t]
-	if !exists {
-		return ErrNoSuchTag
-	}
-	ch <- nil
-	close(ch)
-	delete(c.queue, t)
 	return nil
 }
 
-func (c *Client) write(t qp.Tag, m qp.Message) error {
-	c.writeLock.Lock()
-	defer c.writeLock.Unlock()
-	return c.Proto.Encode(c.RW, m)
+// DirectClient allows for wrapped access to the low-level 9P primitives, but
+// without having to deal with concerns about actual serialization.
+type Client struct {
+	fids    map[qp.Fid]*DirectFid
+	fidLock sync.Mutex
+	client  *RawClient
+	nextFid qp.Fid
 }
 
-func (c *Client) received(m qp.Message) error {
-	c.queueLock.Lock()
-	defer c.queueLock.Unlock()
-	t := m.GetTag()
-	if ch, ok := c.queue[t]; ok {
-		ch <- m
-		close(ch)
-		delete(c.queue, t)
-		return nil
-	}
-	return ErrNoSuchTag
-}
-
-// Tag retrieves the next valid tag.
-func (c *Client) Tag() (qp.Tag, error) {
-	c.queueLock.RLock()
-	defer c.queueLock.RUnlock()
-
-	// No need to loop 0xFFFF times to figure out that the thing is full.
-	if len(c.queue) == 0x10000 {
-		return 0, ErrTagPoolDepleted
-	}
-
-	exists := true
-	var t qp.Tag
-	for i := 0; exists && i < 0xFFFF; i++ {
-		t = c.nextTag
-		c.nextTag++
-		if c.nextTag == qp.NOTAG {
-			c.nextTag = 0
-		}
-
-		_, exists = c.queue[t]
-	}
-
-	// We can fail this check if the only valid tag was qp.NOTAG.
-	if exists {
-		return 0, ErrTagPoolDepleted
-	}
-
-	return t, nil
-}
-
-// Send sends a message and retrieves the response.
-func (c *Client) Send(m qp.Message) (qp.Message, error) {
-	t := m.GetTag()
-	ch, err := c.getChannel(t)
-	if err != nil {
-		c.killChannel(t)
-		return nil, err
-	}
-
-	err = c.write(t, m)
-	if err != nil {
-		c.dead = err
-		return nil, err
-	}
-
-	return <-ch, nil
-}
-
-// Ditch throws a pending request state away, and unblocks any Send on the tag.
-func (c *Client) Ditch(t qp.Tag) error {
-	return c.killChannel(t)
-}
-
-// PendingTags return tags that are currently in use.
-func (c *Client) PendingTags() []qp.Tag {
-	c.queueLock.RLock()
-	defer c.queueLock.RUnlock()
-	var t []qp.Tag
-	for tag := range c.queue {
-		t = append(t, tag)
-	}
-	return t
-}
-
-// Start starts the response parsing loop.
-func (c *Client) Start() error {
-	for c.dead == nil {
-		m, err := c.Proto.Decode(c.RW)
-		if err != nil {
-			c.dead = err
-			return err
-		}
-		c.received(m)
-	}
-	return c.dead
-}
-
-// Stop terminates the reading loop.
-func (c *Client) Stop() {
-	c.dead = ErrStopped
-}
-
-// New creates a new client.
+// NewDirectClient returns an initialized DirectClient.
 func New(rw io.ReadWriter) *Client {
+	c := NewRawClient(rw)
+	go c.Start()
 	return &Client{
-		RW:    rw,
-		Proto: qp.NineP2000,
-		queue: make(map[qp.Tag]chan qp.Message),
+		fids:   make(map[qp.Fid]*DirectFid),
+		client: c,
 	}
+}
+
+// getFid allocates and returns a new Fid.
+func (dc *Client) getFid() (*DirectFid, error) {
+	dc.fidLock.Lock()
+	defer dc.fidLock.Unlock()
+	for i := qp.Fid(0); i < qp.NOFID; i++ {
+		taken := false
+		for key := range dc.fids {
+			if key == i {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			f := &DirectFid{
+				fid:    i,
+				parent: dc,
+			}
+			dc.fids[i] = f
+			return f, nil
+		}
+	}
+	return nil, ErrNoFidsAvailable
+}
+
+// rmFid removes a Fid from the usage pool.
+func (dc *Client) rmFid(f *DirectFid) error {
+	dc.fidLock.Lock()
+	defer dc.fidLock.Unlock()
+	_, ok := dc.fids[f.fid]
+	if ok {
+		delete(dc.fids, f.fid)
+	}
+	return ErrNoSuchFid
+}
+
+// Stop clunks all fids and terminates the client.
+func (dc *Client) Stop() {
+	for _, fid := range dc.fids {
+		fid.Clunk()
+	}
+	dc.fids = nil
+	dc.client.Stop()
+}
+
+// FlushAll flushes all current requests.
+func (dc *Client) FlushAll() {
+	tags := dc.client.PendingTags()
+	for _, t := range tags {
+		dc.Flush(t)
+		dc.client.Ditch(t)
+	}
+}
+
+// Flush sends Tflush.
+func (dc *Client) Flush(oldtag qp.Tag) error {
+	t, err := dc.client.Tag()
+	if err != nil {
+		return err
+	}
+	_, err = dc.client.Send(&qp.FlushRequest{
+		Tag:    t,
+		OldTag: oldtag,
+	})
+
+	return err
+}
+
+// Version sends Tversion.
+func (dc *Client) Version(maxsize uint32, version string) (uint32, string, error) {
+	resp, err := dc.client.Send(&qp.VersionRequest{
+		Tag:     qp.NOTAG,
+		MaxSize: maxsize,
+		Version: qp.Version,
+	})
+
+	if err != nil {
+		return 0, "", err
+	}
+	if err = toError(resp); err != nil {
+		return 0, "", err
+	}
+
+	vresp, ok := resp.(*qp.VersionResponse)
+	if !ok {
+		return 0, "", ErrWeirdResponse
+	}
+
+	return vresp.MaxSize, vresp.Version, nil
+}
+
+// Auth sends Tauth.
+func (dc *Client) Auth(user, service string) (Fid, qp.Qid, error) {
+	t, err := dc.client.Tag()
+	if err != nil {
+		return nil, qp.Qid{}, err
+	}
+
+	nfid, err := dc.getFid()
+	if err != nil {
+		dc.rmFid(nfid)
+		return nil, qp.Qid{}, err
+	}
+
+	resp, err := dc.client.Send(&qp.AuthRequest{
+		Tag:      t,
+		AuthFid:  nfid.fid,
+		Username: user,
+		Service:  service,
+	})
+	if err != nil {
+		dc.rmFid(nfid)
+		return nil, qp.Qid{}, err
+	}
+	if err = toError(resp); err != nil {
+		dc.rmFid(nfid)
+		return nil, qp.Qid{}, err
+	}
+
+	aresp, ok := resp.(*qp.AuthResponse)
+	if !ok {
+		dc.rmFid(nfid)
+		return nil, qp.Qid{}, ErrWeirdResponse
+	}
+
+	return nfid, aresp.AuthQid, nil
+}
+
+// Attach sends Tattch.
+func (dc *Client) Attach(authfid Fid, user, service string) (Fid, qp.Qid, error) {
+	t, err := dc.client.Tag()
+	if err != nil {
+		return nil, qp.Qid{}, err
+	}
+
+	nfid, err := dc.getFid()
+	if err != nil {
+		dc.rmFid(nfid)
+		return nil, qp.Qid{}, err
+	}
+
+	afid := qp.NOFID
+	if authfid != nil {
+		afid = authfid.ID()
+	}
+
+	resp, err := dc.client.Send(&qp.AttachRequest{
+		Tag:      t,
+		Fid:      nfid.fid,
+		AuthFid:  afid,
+		Username: user,
+		Service:  service,
+	})
+	if err != nil {
+		dc.rmFid(nfid)
+		return nil, qp.Qid{}, err
+	}
+	if err = toError(resp); err != nil {
+		dc.rmFid(nfid)
+		return nil, qp.Qid{}, err
+	}
+
+	aresp, ok := resp.(*qp.AttachResponse)
+	if !ok {
+		dc.rmFid(nfid)
+		return nil, qp.Qid{}, ErrWeirdResponse
+	}
+	return nfid, aresp.Qid, nil
+}
+
+// Fid represents a fid, implementing all 9P features that operate on a fid.
+type DirectFid struct {
+	fid    qp.Fid
+	parent *Client
+}
+
+func (f *DirectFid) ID() qp.Fid {
+	return f.fid
+}
+
+// Walk sends Twalk.
+func (f *DirectFid) Walk(names []string) (Fid, []qp.Qid, error) {
+	t, err := f.parent.client.Tag()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	nfid, err := f.parent.getFid()
+	if err != nil {
+		f.parent.rmFid(nfid)
+		return nil, nil, err
+	}
+
+	resp, err := f.parent.client.Send(&qp.WalkRequest{
+		Tag:    t,
+		Fid:    f.fid,
+		NewFid: nfid.fid,
+		Names:  names,
+	})
+
+	if err != nil {
+		return nil, nil, err
+	}
+	if err = toError(resp); err != nil {
+		f.parent.rmFid(nfid)
+		return nil, nil, err
+	}
+
+	wresp, ok := resp.(*qp.WalkResponse)
+	if !ok {
+		f.parent.rmFid(nfid)
+		return nil, nil, ErrWeirdResponse
+	}
+
+	if len(wresp.Qids) != len(names) {
+		f.parent.rmFid(nfid)
+		nfid = nil
+	}
+	return nfid, wresp.Qids, nil
+}
+
+// Clunk sends Tclunk.
+func (f *DirectFid) Clunk() error {
+	t, err := f.parent.client.Tag()
+	if err != nil {
+		return err
+	}
+
+	resp, err := f.parent.client.Send(&qp.ClunkRequest{
+		Tag: t,
+		Fid: f.fid,
+	})
+	if err != nil {
+		return err
+	}
+	if err = toError(resp); err != nil {
+		return err
+	}
+	_, ok := resp.(*qp.ClunkResponse)
+	if !ok {
+		return ErrWeirdResponse
+	}
+	f.parent.rmFid(f)
+	return nil
+}
+
+// Remove sends Tremove.
+func (f *DirectFid) Remove() error {
+	t, err := f.parent.client.Tag()
+	if err != nil {
+		return err
+	}
+
+	resp, err := f.parent.client.Send(&qp.RemoveRequest{
+		Tag: t,
+		Fid: f.fid,
+	})
+	if err != nil {
+		return err
+	}
+	if err = toError(resp); err != nil {
+		return err
+	}
+	_, ok := resp.(*qp.RemoveResponse)
+	if !ok {
+		return ErrWeirdResponse
+	}
+	f.parent.rmFid(f)
+	return nil
+}
+
+// Open sends Topen.
+func (f *DirectFid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
+	t, err := f.parent.client.Tag()
+	if err != nil {
+		return qp.Qid{}, 0, err
+	}
+
+	resp, err := f.parent.client.Send(&qp.OpenRequest{
+		Tag:  t,
+		Fid:  f.fid,
+		Mode: mode,
+	})
+
+	if err != nil {
+		return qp.Qid{}, 0, err
+	}
+	if err = toError(resp); err != nil {
+		return qp.Qid{}, 0, err
+	}
+
+	oresp, ok := resp.(*qp.OpenResponse)
+	if !ok {
+		return qp.Qid{}, 0, ErrWeirdResponse
+	}
+
+	return oresp.Qid, oresp.IOUnit, nil
+}
+
+// Create sends Tcreate.
+func (f *DirectFid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.Qid, uint32, error) {
+	t, err := f.parent.client.Tag()
+	if err != nil {
+		return qp.Qid{}, 0, err
+	}
+
+	resp, err := f.parent.client.Send(&qp.CreateRequest{
+		Tag:         t,
+		Fid:         f.fid,
+		Name:        name,
+		Permissions: perm,
+		Mode:        mode,
+	})
+
+	if err != nil {
+		return qp.Qid{}, 0, err
+	}
+	if err = toError(resp); err != nil {
+		return qp.Qid{}, 0, err
+	}
+
+	oresp, ok := resp.(*qp.CreateResponse)
+	if !ok {
+		return qp.Qid{}, 0, ErrWeirdResponse
+	}
+
+	return oresp.Qid, oresp.IOUnit, nil
+}
+
+// Read sends Tread.
+func (f *DirectFid) Read(offset uint64, count uint32) ([]byte, error) {
+	t, err := f.parent.client.Tag()
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := f.parent.client.Send(&qp.ReadRequest{
+		Tag:    t,
+		Fid:    f.fid,
+		Offset: offset,
+		Count:  count,
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	if err = toError(resp); err != nil {
+		return nil, err
+	}
+	rresp, ok := resp.(*qp.ReadResponse)
+	if !ok {
+		return nil, ErrWeirdResponse
+	}
+	return rresp.Data, nil
+}
+
+// Write sends Twrite.
+func (f *DirectFid) Write(offset uint64, data []byte) (uint32, error) {
+	t, err := f.parent.client.Tag()
+	if err != nil {
+		return 0, err
+	}
+
+	resp, err := f.parent.client.Send(&qp.WriteRequest{
+		Tag:    t,
+		Fid:    f.fid,
+		Offset: offset,
+		Data:   data,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if err = toError(resp); err != nil {
+		return 0, err
+	}
+
+	wresp, ok := resp.(*qp.WriteResponse)
+	if !ok {
+		return 0, ErrWeirdResponse
+	}
+
+	return wresp.Count, nil
+}
+
+// Stat sends Tstat.
+func (f *DirectFid) Stat() (qp.Stat, error) {
+	t, err := f.parent.client.Tag()
+	if err != nil {
+		return qp.Stat{}, err
+	}
+
+	resp, err := f.parent.client.Send(&qp.StatRequest{
+		Tag: t,
+		Fid: f.fid,
+	})
+
+	if err != nil {
+		return qp.Stat{}, err
+	}
+	if err = toError(resp); err != nil {
+		return qp.Stat{}, err
+	}
+
+	sresp, ok := resp.(*qp.StatResponse)
+	if !ok {
+		return qp.Stat{}, ErrWeirdResponse
+	}
+
+	return sresp.Stat, nil
+}
+
+// WriteStat sends Twstat.
+func (f *DirectFid) WriteStat(stat qp.Stat) error {
+	t, err := f.parent.client.Tag()
+	if err != nil {
+		return err
+	}
+
+	resp, err := f.parent.client.Send(&qp.WriteStatRequest{
+		Tag:  t,
+		Fid:  f.fid,
+		Stat: stat,
+	})
+
+	if err != nil {
+		return err
+	}
+	if err = toError(resp); err != nil {
+		return err
+	}
+
+	_, ok := resp.(*qp.WriteStatResponse)
+	if !ok {
+		return ErrWeirdResponse
+	}
+
+	return nil
 }

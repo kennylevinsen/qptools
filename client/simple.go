@@ -39,9 +39,9 @@ func emptyStat() qp.Stat {
 // the most efficient way to use 9P, but allows using such servers with little
 // to no clue about what exactly 9P is.
 type SimpleClient struct {
-	c       *DirectClient
+	c       Connection
 	maxSize uint32
-	root    *Fid
+	root    Fid
 }
 
 func (c *SimpleClient) setup(username, servicename string) error {
@@ -66,7 +66,7 @@ func (c *SimpleClient) setup(username, servicename string) error {
 	return nil
 }
 
-func (c *SimpleClient) readAll(fid *Fid) ([]byte, error) {
+func (c *SimpleClient) readAll(fid Fid) ([]byte, error) {
 	var b []byte
 
 	for {
@@ -84,7 +84,7 @@ func (c *SimpleClient) readAll(fid *Fid) ([]byte, error) {
 	return b, nil
 }
 
-func (c *SimpleClient) writeAll(fid *Fid, data []byte) error {
+func (c *SimpleClient) writeAll(fid Fid, data []byte) error {
 	var offset uint64
 	for {
 		count := int(c.maxSize - 20)
@@ -106,7 +106,7 @@ func (c *SimpleClient) writeAll(fid *Fid, data []byte) error {
 	return nil
 }
 
-func (c *SimpleClient) walkTo(file string) (*Fid, qp.Qid, error) {
+func (c *SimpleClient) walkTo(file string) (Fid, qp.Qid, error) {
 	s := strings.Split(file, "/")
 
 	var strs []string
@@ -146,6 +146,9 @@ func (c *SimpleClient) walkTo(file string) (*Fid, qp.Qid, error) {
 }
 
 func (c *SimpleClient) Stat(file string) (qp.Stat, error) {
+	if c.root == nil {
+		return qp.Stat{}, ErrSimpleClientNotStarted
+	}
 	fid, _, err := c.walkTo(file)
 	if err != nil {
 		return qp.Stat{}, err
@@ -156,6 +159,9 @@ func (c *SimpleClient) Stat(file string) (qp.Stat, error) {
 }
 
 func (c *SimpleClient) ReadSome(file string, offset uint64) ([]byte, error) {
+	if c.root == nil {
+		return nil, ErrSimpleClientNotStarted
+	}
 	fid, _, err := c.walkTo(file)
 	if err != nil {
 		return nil, err
@@ -169,9 +175,15 @@ func (c *SimpleClient) ReadSome(file string, offset uint64) ([]byte, error) {
 }
 
 func (c *SimpleClient) Read(file string) ([]byte, error) {
+	if c.root == nil {
+		return nil, ErrSimpleClientNotStarted
+	}
 	fid, _, err := c.walkTo(file)
 	if err != nil {
 		return nil, err
+	}
+	if fid == nil {
+		return nil, ErrNoSuchFile
 	}
 	defer fid.Clunk()
 	_, _, err = fid.Open(qp.OREAD)
@@ -183,9 +195,15 @@ func (c *SimpleClient) Read(file string) ([]byte, error) {
 }
 
 func (c *SimpleClient) Write(content []byte, file string) error {
+	if c.root == nil {
+		return ErrSimpleClientNotStarted
+	}
 	fid, _, err := c.walkTo(file)
 	if err != nil {
 		return err
+	}
+	if fid == nil {
+		return ErrNoSuchFile
 	}
 	defer fid.Clunk()
 	_, _, err = fid.Open(qp.OWRITE)
@@ -197,6 +215,9 @@ func (c *SimpleClient) Write(content []byte, file string) error {
 }
 
 func (c *SimpleClient) List(file string) ([]qp.Stat, error) {
+	if c.root == nil {
+		return nil, ErrSimpleClientNotStarted
+	}
 	fid, _, err := c.walkTo(file)
 	if err != nil {
 		return nil, err
@@ -227,6 +248,9 @@ func (c *SimpleClient) List(file string) ([]qp.Stat, error) {
 }
 
 func (c *SimpleClient) Create(name string, directory bool) error {
+	if c.root == nil {
+		return ErrSimpleClientNotStarted
+	}
 	dir := path.Dir(name)
 	file := path.Base(name)
 
@@ -249,6 +273,9 @@ func (c *SimpleClient) Create(name string, directory bool) error {
 }
 
 func (c *SimpleClient) Rename(oldname, newname string) error {
+	if c.root == nil {
+		return ErrSimpleClientNotStarted
+	}
 	sold := strings.Split(oldname, "/")
 	snew := strings.Split(newname, "/")
 	if len(sold) != len(snew) {
@@ -274,6 +301,9 @@ func (c *SimpleClient) Rename(oldname, newname string) error {
 }
 
 func (c *SimpleClient) Remove(name string) error {
+	if c.root == nil {
+		return ErrSimpleClientNotStarted
+	}
 	fid, _, err := c.walkTo(name)
 	if err != nil {
 		return err
@@ -288,8 +318,7 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 		return err
 	}
 
-	c.c = NewDirectClient()
-	c.c.Connect(conn)
+	c.c = New(conn)
 
 	err = c.setup(username, servicename)
 	if err != nil {
@@ -299,12 +328,18 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 }
 
 func (c *SimpleClient) Connect(rw io.ReadWriter, username, servicename string) error {
-	c.c = NewDirectClient()
-	c.c.Connect(rw)
+	c.c = New(rw)
 
 	err := c.setup(username, servicename)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+func (c *SimpleClient) Stop() {
+	if c.c != nil {
+		c.c.Stop()
+	}
+	c.c = nil
 }
