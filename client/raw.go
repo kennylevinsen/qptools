@@ -32,29 +32,52 @@ var (
 // RawClient implements a 9P client exposing a blocking rpc-like Send call,
 // while still processing responses out-of-order. A blocking Send can be
 // unblocked by using Ditch.
+//
+// Apart from managing available tags, matching them on response and
+// encoding/decoding messages, RawClient does not concern itself with protocol
+// details.
 type RawClient struct {
-	RW        io.ReadWriter
-	Proto     qp.Protocol
-	dead      error
-	queueLock sync.RWMutex
+	encoder *qp.Encoder
+	decoder *qp.Decoder
+
+	// dead stores any run-loop errors.
+	dead error
+
+	// queue stores a response channel per message tag.
 	queue     map[qp.Tag]chan qp.Message
-	writeLock sync.RWMutex
-	nextTag   qp.Tag
+	queueLock sync.RWMutex
+
+	// nextTag is the next tag to allocate.
+	nextTag qp.Tag
 }
 
-func (c *RawClient) getChannel(t qp.Tag) (chan qp.Message, error) {
+func (c *RawClient) setChannel(t qp.Tag) chan qp.Message {
 	c.queueLock.Lock()
 	defer c.queueLock.Unlock()
 
 	if _, exists := c.queue[t]; exists {
-		return nil, ErrTagInUse
+		return nil
 	}
 
-	ch := make(chan qp.Message, 1)
-	c.queue[t] = ch
-	return ch, nil
+	x := make(chan qp.Message, 1)
+	c.queue[t] = x
+
+	return x
 }
 
+// getChannel retrieves the response channel for a given tag.
+func (c *RawClient) getChannel(t qp.Tag) chan qp.Message {
+	c.queueLock.RLock()
+	defer c.queueLock.RUnlock()
+
+	if m, exists := c.queue[t]; exists {
+		return m
+	}
+
+	return nil
+}
+
+// killChannel closes a response channel and removes it from the map.
 func (c *RawClient) killChannel(t qp.Tag) error {
 	c.queueLock.Lock()
 	defer c.queueLock.Unlock()
@@ -68,17 +91,13 @@ func (c *RawClient) killChannel(t qp.Tag) error {
 	return nil
 }
 
-func (c *RawClient) write(t qp.Tag, m qp.Message) error {
-	c.writeLock.Lock()
-	defer c.writeLock.Unlock()
-	return c.Proto.Encode(c.RW, m)
-}
-
+// received is the callback for messages decoded from the io.ReadWriter.
 func (c *RawClient) received(m qp.Message) error {
 	c.queueLock.Lock()
 	defer c.queueLock.Unlock()
 	t := m.GetTag()
 	if ch, ok := c.queue[t]; ok {
+
 		ch <- m
 		close(ch)
 		delete(c.queue, t)
@@ -87,10 +106,11 @@ func (c *RawClient) received(m qp.Message) error {
 	return ErrNoSuchTag
 }
 
-// Tag retrieves the next valid tag.
+// Tag allocates and retrieves a tag. The tag MUST be used or ditched
+// afterwards, in order not to leak tags.
 func (c *RawClient) Tag() (qp.Tag, error) {
-	c.queueLock.RLock()
-	defer c.queueLock.RUnlock()
+	c.queueLock.Lock()
+	defer c.queueLock.Unlock()
 
 	// No need to loop 0xFFFF times to figure out that the thing is full.
 	if len(c.queue) == 0x10000 {
@@ -114,19 +134,27 @@ func (c *RawClient) Tag() (qp.Tag, error) {
 		return 0, ErrTagPoolDepleted
 	}
 
+	c.queue[t] = make(chan qp.Message, 1)
+
 	return t, nil
 }
 
 // Send sends a message and retrieves the response.
 func (c *RawClient) Send(m qp.Message) (qp.Message, error) {
 	t := m.GetTag()
-	ch, err := c.getChannel(t)
-	if err != nil {
-		c.killChannel(t)
-		return nil, err
+	ch := c.getChannel(t)
+	if ch == nil {
+		if t == qp.NOTAG {
+			ch = c.setChannel(qp.NOTAG)
+			if ch == nil {
+				return nil, ErrTagInUse
+			}
+		} else {
+			return nil, ErrNoSuchTag
+		}
 	}
 
-	err = c.write(t, m)
+	err := c.encoder.WriteMessage(m)
 	if err != nil {
 		c.dead = err
 		return nil, err
@@ -151,29 +179,53 @@ func (c *RawClient) PendingTags() []qp.Tag {
 	return t
 }
 
+// SetProtocol changes the protocol used for message de/encoding. Calling this
+// method is only safe if there is a guarantee that the client and server will
+// not exchange any messages before the change has been complete, to ensure
+// proper de/encoding of messages. Calling this method while the Decoder is
+// decoding messages may results in a decoder error, terminating the run loop.
+func (c *RawClient) SetProtocol(p qp.Protocol) {
+	// We take the writeLock to ensure that no one is trying to write
+	// messages.
+	c.encoder.SetProtocol(p)
+	c.decoder.SetProtocol(p)
+}
+
+// SetReadWriter sets the io.ReadWriter used for message de/encoding.
+func (c *RawClient) SetReadWriter(rw io.ReadWriter) {
+	c.encoder.SetWriter(rw)
+	c.decoder.SetReader(rw)
+}
+
 // Start starts the response parsing loop.
 func (c *RawClient) Start() error {
-	for c.dead == nil {
-		m, err := c.Proto.Decode(c.RW)
-		if err != nil {
-			c.dead = err
-			return err
-		}
-		c.received(m)
-	}
-	return c.dead
+	return c.decoder.Run()
 }
 
 // Stop terminates the reading loop.
 func (c *RawClient) Stop() {
+	c.decoder.Stop()
 	c.dead = ErrStopped
 }
 
 // New creates a new client.
 func NewRawClient(rw io.ReadWriter) *RawClient {
-	return &RawClient{
-		RW:    rw,
-		Proto: qp.NineP2000,
+	c := &RawClient{
 		queue: make(map[qp.Tag]chan qp.Message),
 	}
+
+	c.encoder = &qp.Encoder{
+		Protocol: qp.NineP2000,
+		Writer:   rw,
+		MaxSize:  16384,
+	}
+
+	c.decoder = &qp.Decoder{
+		Protocol: qp.NineP2000,
+		Reader:   rw,
+		Callback: c.received,
+		MaxSize:  16384,
+	}
+
+	return c
 }

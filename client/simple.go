@@ -318,7 +318,9 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 		return err
 	}
 
-	c.c = New(conn)
+	x := New(conn)
+	go x.Start()
+	c.c = x
 
 	err = c.setup(username, servicename)
 	if err != nil {
@@ -328,7 +330,10 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 }
 
 func (c *SimpleClient) Connect(rw io.ReadWriter, username, servicename string) error {
-	c.c = New(rw)
+	x := New(rw)
+	go x.Start()
+
+	c.c = x
 
 	err := c.setup(username, servicename)
 	if err != nil {

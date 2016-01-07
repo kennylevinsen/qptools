@@ -5,7 +5,6 @@ import (
 	"io"
 	"log"
 	"sync"
-	"time"
 
 	"github.com/joushou/qp"
 	"github.com/joushou/qptools/fileserver/trees"
@@ -102,9 +101,6 @@ type fidState struct {
 //
 // 6. FileServer does not enforce maxsize (hopefully a temporary limitation).
 type FileServer struct {
-	// RW is the io.ReadWriter used for communication.
-	RW io.ReadWriter
-
 	// Verbosity is the verbosity level.
 	Verbosity Verbosity
 
@@ -119,9 +115,7 @@ type FileServer struct {
 	AuthFile trees.File
 
 	// internal
-	writeLock sync.Mutex
-	p         qp.Protocol
-	dead      error
+	dead error
 
 	// It is important that the locks below are only held during the immediate
 	// manipulation of the maps they are associated with. That also includes
@@ -132,9 +126,13 @@ type FileServer struct {
 	tagLock sync.Mutex
 
 	// session data
-	maxsize uint32
+	MaxSize uint32
 	fids    map[qp.Fid]*fidState
 	tags    map[qp.Tag]bool
+
+	// Codecs
+	Encoder *qp.Encoder
+	Decoder *qp.Decoder
 }
 
 // cleanup handles post-execution cleanup.
@@ -172,27 +170,12 @@ func (fs *FileServer) logresp(t qp.Tag, m qp.Message) {
 	}
 }
 
-func (fs *FileServer) sendError(t qp.Tag, str string) {
-	e := &qp.ErrorResponse{
-		Tag:   t,
-		Error: str,
-	}
-	fs.respond(t, e)
-}
-
 // respond sends a response if the tag is still queued. The tag is removed
 // immediately after checking its existence. It marks the fileserver as broken
 // on error by setting fs.dead to the error, which must break the server loop.
 func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
-	// We're holding writeLock during the full duration of respond in order to
+	// We're holding tagLock during the full duration of respond in order to
 	// ensure that flush handling cannot end up sending an Rflush for the tag.
-	// If writeLock was only held during write, and tagLock was only held
-	// during tag map access, an Rflush could end up being sent in between
-	// those two locks, breaking flush protocol, which guarantees that a tag is
-	// immediately reusable after an Rflush for it has been received.
-	fs.writeLock.Lock()
-	defer fs.writeLock.Unlock()
-
 	fs.tagLock.Lock()
 	_, tagPresent := fs.tags[t]
 
@@ -202,14 +185,36 @@ func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
 	}
 
 	delete(fs.tags, t)
+	fs.logresp(t, m)
 	fs.tagLock.Unlock()
 
-	fs.logresp(t, m)
-
-	err := fs.p.Encode(fs.RW, m)
-	if err != nil {
+	err := fs.Encoder.WriteMessage(m)
+	switch err {
+	case qp.ErrMessageTooBig:
+		if e, ok := m.(*qp.ErrorResponse); ok {
+			if e.Error == "response too big" {
+				fs.dead = errors.New("unable to send message size error")
+				fs.Stop()
+				return
+			}
+		}
+		fs.addTag(t)
+		fs.sendError(t, "response too big")
+		return
+	default:
 		fs.dead = err
+		fs.Stop()
+	case nil:
+		return
 	}
+}
+
+func (fs *FileServer) sendError(t qp.Tag, str string) {
+	e := &qp.ErrorResponse{
+		Tag:   t,
+		Error: str,
+	}
+	fs.respond(t, e)
 }
 
 // addTag registers a tag as a pending request. Removing the tag prior to its
@@ -357,15 +362,17 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 
 	versionstr := r.Version
 	maxsize := r.MaxSize
-	if maxsize > MaxSize {
-		maxsize = MaxSize
-	} else if maxsize < 128 {
+	if maxsize > fs.MaxSize {
+		maxsize = fs.MaxSize
+	} else if maxsize < MinSize {
 		// This makes no sense. Try to force the client up a bit.
 		// NOTE(kl): Should we rather just return an unknown version response?
-		maxsize = 128
+		maxsize = MinSize
 	}
 
-	fs.maxsize = maxsize
+	fs.MaxSize = maxsize
+	fs.Encoder.SetMaxSize(maxsize)
+	fs.Decoder.SetMaxSize(maxsize)
 
 	// We change the protocol codec here if necessary. This only works because
 	// the server loop is currently blocked. Had it continued ahead, blocking
@@ -373,13 +380,19 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 	// for the next-next request. This would be an issue for .u, which change
 	// the Tattach message, as well as for .e, which might follow up with a
 	// Tsession immediately after our Rversion.
+	var proto qp.Protocol
 	switch versionstr {
 	case qp.Version:
-		fs.p = qp.NineP2000
+		proto = qp.NineP2000
 	default:
-		fs.p = qp.NineP2000
+		proto = qp.NineP2000
 		versionstr = qp.UnknownVersion
 	}
+
+	// Modifying protocol is safe, as we're stuck in a blocking callback from
+	// the Decoder.
+	fs.Encoder.SetProtocol(proto)
+	fs.Decoder.SetProtocol(proto)
 
 	// Tversion resets everything
 	fs.cleanup()
@@ -744,7 +757,7 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 	}
 
 	// We try to cap things to the negotiated maxsize
-	count := int(fs.maxsize) - (4 + qp.HeaderSize)
+	count := int(fs.MaxSize) - (4 + qp.HeaderSize)
 	if count > int(r.Count) {
 		count = int(r.Count)
 	}
@@ -990,77 +1003,77 @@ func (fs *FileServer) unsupported(r qp.Message) {
 	fs.sendError(t, UnsupportedMessage)
 }
 
-// Start starts the server loop. The loop returns on I/O error.
-func (fs *FileServer) Start() error {
-	for fs.dead == nil {
-		m, err := fs.p.Decode(fs.RW)
-		if err != nil {
-			fs.dead = err
-			break
-		}
-
-		switch mx := m.(type) {
-		// Basic messages
-		case *qp.VersionRequest:
-			fs.version(mx)
-		case *qp.AuthRequest:
-			fs.auth(mx)
-		case *qp.AttachRequest:
-			fs.attach(mx)
-		case *qp.FlushRequest:
-			fs.flush(mx)
-		case *qp.WalkRequest:
-			go fs.walk(mx)
-		case *qp.OpenRequest:
-			go fs.open(mx)
-		case *qp.CreateRequest:
-			go fs.create(mx)
-		case *qp.ReadRequest:
-			go fs.read(mx)
-		case *qp.WriteRequest:
-			go fs.write(mx)
-		case *qp.ClunkRequest:
-			go fs.clunk(mx)
-		case *qp.RemoveRequest:
-			go fs.remove(mx)
-		case *qp.StatRequest:
-			go fs.stat(mx)
-		case *qp.WriteStatRequest:
-			go fs.writeStat(mx)
-		default:
-			fs.unsupported(m)
-		}
+func (fs *FileServer) received(m qp.Message) error {
+	switch mx := m.(type) {
+	// Basic messages
+	case *qp.VersionRequest:
+		fs.version(mx)
+	case *qp.AuthRequest:
+		fs.auth(mx)
+	case *qp.AttachRequest:
+		fs.attach(mx)
+	case *qp.FlushRequest:
+		fs.flush(mx)
+	case *qp.WalkRequest:
+		go fs.walk(mx)
+	case *qp.OpenRequest:
+		go fs.open(mx)
+	case *qp.CreateRequest:
+		go fs.create(mx)
+	case *qp.ReadRequest:
+		go fs.read(mx)
+	case *qp.WriteRequest:
+		go fs.write(mx)
+	case *qp.ClunkRequest:
+		go fs.clunk(mx)
+	case *qp.RemoveRequest:
+		go fs.remove(mx)
+	case *qp.StatRequest:
+		go fs.stat(mx)
+	case *qp.WriteStatRequest:
+		go fs.writeStat(mx)
+	default:
+		fs.unsupported(m)
 	}
+	return nil
+}
 
+// Start starts the response parsing loop.
+func (fs *FileServer) Start() error {
+	fs.dead = fs.Decoder.Run()
 	fs.cleanup()
 	return fs.dead
+}
+
+// Stop stops the response parsing loop.
+func (fs *FileServer) Stop() {
+	fs.Decoder.Stop()
 }
 
 // New constructs a new FileServer. roots is the map where the fileserver
 // should look for directory roots based on service name. defaultRoot is the
 // root that will be used if the service wasn't in the map. If the service is
 // not in the map, and there is no default set, attach will fail.
-func New(rw io.ReadWriter, defaultRoot trees.Dir, roots map[string]trees.Dir, v Verbosity) *FileServer {
+func New(rw io.ReadWriter, defaultRoot trees.Dir, roots map[string]trees.Dir) *FileServer {
 	fs := &FileServer{
-		RW:          rw,
 		DefaultRoot: defaultRoot,
 		Roots:       roots,
-		Verbosity:   v,
-		p:           qp.NineP2000,
+		Verbosity:   Quiet,
+		MaxSize:     MaxSize,
 		tags:        make(map[qp.Tag]bool),
 	}
 
-	if v == Debug {
-		go func() {
-			t := time.Tick(10 * time.Second)
-			for range t {
-				if fs.dead != nil {
-					return
-				}
+	fs.Encoder = &qp.Encoder{
+		Protocol: qp.NineP2000,
+		Writer:   rw,
+		MaxSize:  MaxSize,
+	}
 
-				log.Printf("Open fids: %d", len(fs.fids))
-			}
-		}()
+	fs.Decoder = &qp.Decoder{
+		Protocol: qp.NineP2000,
+		Reader:   rw,
+		Callback: fs.received,
+		MaxSize:  MaxSize,
 	}
 
 	return fs

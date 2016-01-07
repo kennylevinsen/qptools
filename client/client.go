@@ -40,11 +40,15 @@ type Client struct {
 // NewDirectClient returns an initialized DirectClient.
 func New(rw io.ReadWriter) *Client {
 	c := NewRawClient(rw)
-	go c.Start()
 	return &Client{
 		fids:   make(map[qp.Fid]*DirectFid),
 		client: c,
 	}
+}
+
+// Start starts the underlying client.
+func (dc *Client) Start() error {
+	return dc.client.Start()
 }
 
 // getFid allocates and returns a new Fid.

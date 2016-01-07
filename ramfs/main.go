@@ -71,7 +71,8 @@ func main() {
 			return
 		}
 
-		f := fileserver.New(conn, root, nil, verbosity)
+		f := fileserver.New(conn, root, nil)
+		f.Verbosity = verbosity
 		go f.Start()
 	}
 }
