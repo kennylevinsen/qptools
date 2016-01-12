@@ -199,7 +199,7 @@ func (d *SyntheticDir) Create(user, name string, perms qp.FileMode) (File, error
 	var f File
 	if perms&qp.DMDIR != 0 {
 		perms = perms & (^qp.FileMode(0777) | (d.Permissions & 0777))
-		f = NewSyntheticFile(name, perms, d.UID, d.GID)
+		f = NewSyntheticDir(name, perms, d.UID, d.GID)
 	} else {
 		perms = perms & (^qp.FileMode(0666) | (d.Permissions & 0666))
 		f = NewSyntheticFile(name, perms, d.UID, d.GID)
