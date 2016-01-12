@@ -34,8 +34,8 @@ var (
 // unblocked by using Ditch.
 //
 // Apart from managing available tags, matching them on response and
-// encoding/decoding messages, RawClient does not concern itself with protocol
-// details.
+// encoding/decoding messages, RawClient does not concern itself with any
+// protocol details.
 type RawClient struct {
 	encoder *qp.Encoder
 	decoder *qp.Decoder
@@ -49,6 +49,9 @@ type RawClient struct {
 
 	// nextTag is the next tag to allocate.
 	nextTag qp.Tag
+
+	// msgsize is the maximum set message size.
+	msgsize uint32
 }
 
 func (c *RawClient) setChannel(t qp.Tag) chan qp.Message {
@@ -197,6 +200,18 @@ func (c *RawClient) SetReadWriter(rw io.ReadWriter) {
 	c.decoder.SetReader(rw)
 }
 
+// SetMessageSize sets the maxsimum message size.
+func (c *RawClient) SetMessageSize(ms uint32) {
+	c.msgsize = ms
+	c.encoder.SetMessageSize(ms)
+	c.decoder.SetMessageSize(ms)
+}
+
+// MessageSize returns the maximum message size.
+func (c *RawClient) MessageSize() uint32 {
+	return c.msgsize
+}
+
 // Start starts the response parsing loop.
 func (c *RawClient) Start() error {
 	return c.decoder.Run()
@@ -208,23 +223,24 @@ func (c *RawClient) Stop() {
 	c.dead = ErrStopped
 }
 
-// New creates a new client.
+// NewRawClient creates a new client.
 func NewRawClient(rw io.ReadWriter) *RawClient {
 	c := &RawClient{
-		queue: make(map[qp.Tag]chan qp.Message),
+		queue:   make(map[qp.Tag]chan qp.Message),
+		msgsize: 16384,
 	}
 
 	c.encoder = &qp.Encoder{
-		Protocol: qp.NineP2000,
-		Writer:   rw,
-		MaxSize:  16384,
+		Protocol:    qp.NineP2000,
+		Writer:      rw,
+		MessageSize: 16384,
 	}
 
 	c.decoder = &qp.Decoder{
-		Protocol: qp.NineP2000,
-		Reader:   rw,
-		Callback: c.received,
-		MaxSize:  16384,
+		Protocol:    qp.NineP2000,
+		Reader:      rw,
+		Callback:    c.received,
+		MessageSize: 16384,
 	}
 
 	return c

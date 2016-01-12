@@ -12,13 +12,14 @@ import (
 )
 
 const (
-	// DefaultMaxSize is the default size used during protocol negotiation.
-	DefaultMaxSize = 128 * 1024
+	// DefaultMessageSize is the default size used during protocol negotiation.
+	DefaultMessageSize = 128 * 1024
 )
 
 // SimpleClient errors
 var (
 	ErrNotADirectory          = errors.New("not a directory")
+	ErrInvalidPath            = errors.New("invalid path")
 	ErrNoSuchFile             = errors.New("no such file")
 	ErrUnknownProtocol        = errors.New("unknown protocol")
 	ErrSimpleClientNotStarted = errors.New("client not started")
@@ -40,10 +41,11 @@ func emptyStat() qp.Stat {
 // to no clue about what exactly 9P is.
 type SimpleClient struct {
 	c       Connection
-	maxSize uint32
+	msgsize uint32
 	root    Fid
 }
 
+// setup initializes the 9P connection.
 func (c *SimpleClient) setup(username, servicename string) error {
 	if c.c == nil {
 		return ErrSimpleClientNotStarted
@@ -51,7 +53,7 @@ func (c *SimpleClient) setup(username, servicename string) error {
 
 	var version string
 	var err error
-	c.maxSize, version, err = c.c.Version(DefaultMaxSize, qp.Version)
+	c.msgsize, version, err = c.c.Version(DefaultMessageSize, qp.Version)
 	if err != nil {
 		return err
 	}
@@ -66,46 +68,7 @@ func (c *SimpleClient) setup(username, servicename string) error {
 	return nil
 }
 
-func (c *SimpleClient) readAll(fid Fid) ([]byte, error) {
-	var b []byte
-
-	for {
-		// 9 is the size of a read response
-		data, err := fid.Read(uint64(len(b)), c.maxSize-9)
-		if err != nil {
-			return nil, err
-		}
-		if len(data) == 0 {
-			break
-		}
-		b = append(b, data...)
-	}
-
-	return b, nil
-}
-
-func (c *SimpleClient) writeAll(fid Fid, data []byte) error {
-	var offset uint64
-	for {
-		count := int(c.maxSize - 20)
-		if len(data[offset:]) < count {
-			count = len(data[offset:])
-		}
-
-		if count == 0 {
-			break
-		}
-
-		wcount, err := fid.Write(offset, data[offset:offset+uint64(count)])
-		if err != nil {
-			return err
-		}
-		offset += uint64(wcount)
-	}
-
-	return nil
-}
-
+// walkTo splits the provided filepath on "/", performing the filewalk.
 func (c *SimpleClient) walkTo(file string) (Fid, qp.Qid, error) {
 	s := strings.Split(file, "/")
 
@@ -117,6 +80,10 @@ func (c *SimpleClient) walkTo(file string) (Fid, qp.Qid, error) {
 	}
 	s = strs
 
+	if len(s) == 0 {
+		return nil, qp.Qid{}, ErrInvalidPath
+	}
+
 	fid, qids, err := c.root.Walk(s)
 	if err != nil {
 		return nil, qp.Qid{}, err
@@ -125,26 +92,10 @@ func (c *SimpleClient) walkTo(file string) (Fid, qp.Qid, error) {
 		return nil, qp.Qid{}, ErrNoSuchFile
 	}
 
-	if len(qids) != len(s) {
-		return nil, qp.Qid{}, ErrNoSuchFile
-	}
-
-	q := qp.Qid{}
-	if len(qids) > 0 {
-		end := len(qids) - 1
-		for i, q := range qids {
-			if i == end {
-				break
-			}
-			if q.Type&qp.QTDIR == 0 {
-				return nil, qp.Qid{}, ErrNotADirectory
-			}
-		}
-		q = qids[end]
-	}
-	return fid, q, nil
+	return fid, qids[len(qids)-1], nil
 }
 
+// Stat returns the qp.Stat structure of the file.
 func (c *SimpleClient) Stat(file string) (qp.Stat, error) {
 	if c.root == nil {
 		return qp.Stat{}, ErrSimpleClientNotStarted
@@ -158,22 +109,7 @@ func (c *SimpleClient) Stat(file string) (qp.Stat, error) {
 	return fid.Stat()
 }
 
-func (c *SimpleClient) ReadSome(file string, offset uint64) ([]byte, error) {
-	if c.root == nil {
-		return nil, ErrSimpleClientNotStarted
-	}
-	fid, _, err := c.walkTo(file)
-	if err != nil {
-		return nil, err
-	}
-	defer fid.Clunk()
-	_, _, err = fid.Open(qp.OREAD)
-	if err != nil {
-		return nil, err
-	}
-	return fid.Read(offset, c.maxSize-9)
-}
-
+// Read reads the entire file content of the file specified.
 func (c *SimpleClient) Read(file string) ([]byte, error) {
 	if c.root == nil {
 		return nil, ErrSimpleClientNotStarted
@@ -191,9 +127,12 @@ func (c *SimpleClient) Read(file string) ([]byte, error) {
 		return nil, err
 	}
 
-	return c.readAll(fid)
+	sfid := &WrappedFid{Fid: fid}
+
+	return sfid.ReadAll()
 }
 
+// Write writes the content specified to the file specified.
 func (c *SimpleClient) Write(content []byte, file string) error {
 	if c.root == nil {
 		return ErrSimpleClientNotStarted
@@ -211,9 +150,14 @@ func (c *SimpleClient) Write(content []byte, file string) error {
 		return err
 	}
 
-	return c.writeAll(fid, content)
+	sfid := &WrappedFid{Fid: fid}
+
+	return sfid.WriteAll(content)
 }
 
+// List returns a list of qp.Stats for each file in the directory. It does not
+// verify if the file is a directory before trying to decode the content - the
+// result will most likely be decoding errors.
 func (c *SimpleClient) List(file string) ([]qp.Stat, error) {
 	if c.root == nil {
 		return nil, ErrSimpleClientNotStarted
@@ -228,7 +172,9 @@ func (c *SimpleClient) List(file string) ([]qp.Stat, error) {
 		return nil, err
 	}
 
-	b, err := c.readAll(fid)
+	sfid := &WrappedFid{Fid: fid}
+
+	b, err := sfid.ReadAll()
 	if err != nil {
 		return nil, err
 	}
@@ -247,6 +193,8 @@ func (c *SimpleClient) List(file string) ([]qp.Stat, error) {
 	return stats, nil
 }
 
+// Create creates either a file or a directory at the specified path. It fails
+// if the file already exists, or permissions did not permit it.
 func (c *SimpleClient) Create(name string, directory bool) error {
 	if c.root == nil {
 		return ErrSimpleClientNotStarted
@@ -272,6 +220,8 @@ func (c *SimpleClient) Create(name string, directory bool) error {
 	return nil
 }
 
+// Rename renames a file. It can only rename within a directory. It fails if
+// the target name already exists.
 func (c *SimpleClient) Rename(oldname, newname string) error {
 	if c.root == nil {
 		return ErrSimpleClientNotStarted
@@ -300,6 +250,7 @@ func (c *SimpleClient) Rename(oldname, newname string) error {
 	return fid.WriteStat(s)
 }
 
+// Remove removes a file, if permitted.
 func (c *SimpleClient) Remove(name string) error {
 	if c.root == nil {
 		return ErrSimpleClientNotStarted
@@ -312,6 +263,8 @@ func (c *SimpleClient) Remove(name string) error {
 	return nil
 }
 
+// Dial calls the provided address on the provided network, connecting to the
+// provided service as the provided user. It does not support authentication.
 func (c *SimpleClient) Dial(network, address, username, servicename string) error {
 	conn, err := net.Dial(network, address)
 	if err != nil {
@@ -329,6 +282,8 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 	return nil
 }
 
+// Connect connects to the provided service as the provided user over the
+// provided io.ReadWriter. It does not support authentication.
 func (c *SimpleClient) Connect(rw io.ReadWriter, username, servicename string) error {
 	x := New(rw)
 	go x.Start()
@@ -342,6 +297,7 @@ func (c *SimpleClient) Connect(rw io.ReadWriter, username, servicename string) e
 	return nil
 }
 
+// Stop stops the underlying client.
 func (c *SimpleClient) Stop() {
 	if c.c != nil {
 		c.c.Stop()

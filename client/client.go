@@ -28,20 +28,20 @@ func toError(m qp.Message) error {
 	return nil
 }
 
-// DirectClient allows for wrapped access to the low-level 9P primitives, but
+// Client allows for wrapped access to the low-level 9P primitives, but
 // without having to deal with concerns about actual serialization.
 type Client struct {
-	fids    map[qp.Fid]*DirectFid
+	fids    map[qp.Fid]*fid
 	fidLock sync.Mutex
 	client  *RawClient
 	nextFid qp.Fid
 }
 
-// NewDirectClient returns an initialized DirectClient.
+// New returns an initialized Client.
 func New(rw io.ReadWriter) *Client {
 	c := NewRawClient(rw)
 	return &Client{
-		fids:   make(map[qp.Fid]*DirectFid),
+		fids:   make(map[qp.Fid]*fid),
 		client: c,
 	}
 }
@@ -52,7 +52,7 @@ func (dc *Client) Start() error {
 }
 
 // getFid allocates and returns a new Fid.
-func (dc *Client) getFid() (*DirectFid, error) {
+func (dc *Client) getFid() (*fid, error) {
 	dc.fidLock.Lock()
 	defer dc.fidLock.Unlock()
 	for i := qp.Fid(0); i < qp.NOFID; i++ {
@@ -64,7 +64,7 @@ func (dc *Client) getFid() (*DirectFid, error) {
 			}
 		}
 		if !taken {
-			f := &DirectFid{
+			f := &fid{
 				fid:    i,
 				parent: dc,
 			}
@@ -76,7 +76,7 @@ func (dc *Client) getFid() (*DirectFid, error) {
 }
 
 // rmFid removes a Fid from the usage pool.
-func (dc *Client) rmFid(f *DirectFid) error {
+func (dc *Client) rmFid(f *fid) error {
 	dc.fidLock.Lock()
 	defer dc.fidLock.Unlock()
 	_, ok := dc.fids[f.fid]
@@ -119,11 +119,11 @@ func (dc *Client) Flush(oldtag qp.Tag) error {
 }
 
 // Version sends Tversion.
-func (dc *Client) Version(maxsize uint32, version string) (uint32, string, error) {
+func (dc *Client) Version(msgsize uint32, version string) (uint32, string, error) {
 	resp, err := dc.client.Send(&qp.VersionRequest{
-		Tag:     qp.NOTAG,
-		MaxSize: maxsize,
-		Version: qp.Version,
+		Tag:         qp.NOTAG,
+		MessageSize: msgsize,
+		Version:     qp.Version,
 	})
 
 	if err != nil {
@@ -138,7 +138,7 @@ func (dc *Client) Version(maxsize uint32, version string) (uint32, string, error
 		return 0, "", ErrWeirdResponse
 	}
 
-	return vresp.MaxSize, vresp.Version, nil
+	return vresp.MessageSize, vresp.Version, nil
 }
 
 // Auth sends Tauth.
@@ -220,18 +220,27 @@ func (dc *Client) Attach(authfid Fid, user, service string) (Fid, qp.Qid, error)
 	return nfid, aresp.Qid, nil
 }
 
-// Fid represents a fid, implementing all 9P features that operate on a fid.
-type DirectFid struct {
-	fid    qp.Fid
-	parent *Client
+// fid represents a fid, implementing all 9P features that operate on a
+// fid.
+type fid struct {
+	fid        qp.Fid
+	parent     *Client
+	offset     int64
+	offsetLock sync.Mutex
 }
 
-func (f *DirectFid) ID() qp.Fid {
+// ID returns the integer value of the fid as a qp.Fid.
+func (f *fid) ID() qp.Fid {
 	return f.fid
 }
 
+// MessageSize returns the message size of the parent connections client.
+func (f *fid) MessageSize() uint32 {
+	return f.parent.client.MessageSize()
+}
+
 // Walk sends Twalk.
-func (f *DirectFid) Walk(names []string) (Fid, []qp.Qid, error) {
+func (f *fid) Walk(names []string) (Fid, []qp.Qid, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return nil, nil, err
@@ -272,7 +281,7 @@ func (f *DirectFid) Walk(names []string) (Fid, []qp.Qid, error) {
 }
 
 // Clunk sends Tclunk.
-func (f *DirectFid) Clunk() error {
+func (f *fid) Clunk() error {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return err
@@ -297,7 +306,7 @@ func (f *DirectFid) Clunk() error {
 }
 
 // Remove sends Tremove.
-func (f *DirectFid) Remove() error {
+func (f *fid) Remove() error {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return err
@@ -322,7 +331,7 @@ func (f *DirectFid) Remove() error {
 }
 
 // Open sends Topen.
-func (f *DirectFid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
+func (f *fid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return qp.Qid{}, 0, err
@@ -350,7 +359,7 @@ func (f *DirectFid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
 }
 
 // Create sends Tcreate.
-func (f *DirectFid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.Qid, uint32, error) {
+func (f *fid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.Qid, uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return qp.Qid{}, 0, err
@@ -379,8 +388,8 @@ func (f *DirectFid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.
 	return oresp.Qid, oresp.IOUnit, nil
 }
 
-// Read sends Tread.
-func (f *DirectFid) Read(offset uint64, count uint32) ([]byte, error) {
+// ReadOnce is the primitive API, and is directly equivalent to sending a Tread.
+func (f *fid) ReadOnce(offset uint64, count uint32) ([]byte, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return nil, err
@@ -406,8 +415,8 @@ func (f *DirectFid) Read(offset uint64, count uint32) ([]byte, error) {
 	return rresp.Data, nil
 }
 
-// Write sends Twrite.
-func (f *DirectFid) Write(offset uint64, data []byte) (uint32, error) {
+// WriteOnce is the primitive API, and is directly equivalent to sending a Twrite.
+func (f *fid) WriteOnce(offset uint64, data []byte) (uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return 0, err
@@ -435,7 +444,7 @@ func (f *DirectFid) Write(offset uint64, data []byte) (uint32, error) {
 }
 
 // Stat sends Tstat.
-func (f *DirectFid) Stat() (qp.Stat, error) {
+func (f *fid) Stat() (qp.Stat, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return qp.Stat{}, err
@@ -462,7 +471,7 @@ func (f *DirectFid) Stat() (qp.Stat, error) {
 }
 
 // WriteStat sends Twstat.
-func (f *DirectFid) WriteStat(stat qp.Stat) error {
+func (f *fid) WriteStat(stat qp.Stat) error {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return err
