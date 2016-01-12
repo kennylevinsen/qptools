@@ -46,9 +46,9 @@ func New(rw io.ReadWriter) *Client {
 	}
 }
 
-// Start starts the underlying client.
-func (dc *Client) Start() error {
-	return dc.client.Start()
+// Serve runs the underlying client.
+func (dc *Client) Serve() error {
+	return dc.client.Serve()
 }
 
 // getFid allocates and returns a new Fid.

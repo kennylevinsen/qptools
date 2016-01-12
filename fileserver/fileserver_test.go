@@ -80,12 +80,13 @@ func (f *fakeFile) Open(user string, mode qp.OpenMode) (trees.ReadWriteSeekClose
 func TestClunkRemove(t *testing.T) {
 	buf := dummyRW{}
 	ff := &fakeFile{}
-	fs := New(buf, ff, nil, TestVerbosity)
+	fs := New(buf, ff, nil)
+	fs.Verbosity = TestVerbosity
 
 	fs.version(&qp.VersionRequest{
-		Tag:     qp.NOTAG,
-		Version: qp.Version,
-		MaxSize: 4096,
+		Tag:         qp.NOTAG,
+		Version:     qp.Version,
+		MessageSize: 4096,
 	})
 
 	fs.attach(&qp.AttachRequest{
@@ -144,12 +145,13 @@ func TestClunkRemove(t *testing.T) {
 func TestCleanup(t *testing.T) {
 	buf := dummyRW{}
 	ff := &fakeFile{}
-	fs := New(buf, ff, nil, TestVerbosity)
+	fs := New(buf, ff, nil)
+	fs.Verbosity = TestVerbosity
 
 	fs.version(&qp.VersionRequest{
-		Tag:     qp.NOTAG,
-		Version: qp.Version,
-		MaxSize: 4096,
+		Tag:         qp.NOTAG,
+		Version:     qp.Version,
+		MessageSize: 4096,
 	})
 
 	fs.attach(&qp.AttachRequest{
@@ -233,12 +235,13 @@ func TestCleanup(t *testing.T) {
 func TestVersionCleanup(t *testing.T) {
 	buf := dummyRW{}
 	ff := &fakeFile{}
-	fs := New(buf, ff, nil, TestVerbosity)
+	fs := New(buf, ff, nil)
+	fs.Verbosity = TestVerbosity
 
 	fs.version(&qp.VersionRequest{
-		Tag:     qp.NOTAG,
-		Version: qp.Version,
-		MaxSize: 4096,
+		Tag:         qp.NOTAG,
+		Version:     qp.Version,
+		MessageSize: 4096,
 	})
 
 	fs.attach(&qp.AttachRequest{
@@ -303,9 +306,9 @@ func TestVersionCleanup(t *testing.T) {
 	wg1.Wait()
 
 	fs.version(&qp.VersionRequest{
-		Tag:     qp.NOTAG,
-		Version: qp.Version,
-		MaxSize: 4096,
+		Tag:         qp.NOTAG,
+		Version:     qp.Version,
+		MessageSize: 4096,
 	})
 
 	if ff.opened != 0 {
@@ -322,13 +325,14 @@ func TestAuth(t *testing.T) {
 	buf := dummyRW{}
 	af := &fakeFile{}
 	ff := &fakeFile{}
-	fs := New(buf, ff, nil, TestVerbosity)
+	fs := New(buf, ff, nil)
+	fs.Verbosity = TestVerbosity
 	fs.AuthFile = af
 
 	fs.version(&qp.VersionRequest{
-		Tag:     qp.NOTAG,
-		Version: qp.Version,
-		MaxSize: 4096,
+		Tag:         qp.NOTAG,
+		Version:     qp.Version,
+		MessageSize: 4096,
 	})
 
 	fs.auth(&qp.AuthRequest{

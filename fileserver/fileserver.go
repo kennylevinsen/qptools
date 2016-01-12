@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"os"
 	"sync"
 
 	"github.com/joushou/qp"
@@ -14,32 +15,46 @@ import (
 // fileserver will blindly return errors from the directory tree to the 9P
 // client.
 const (
-	FidInUse           = "fid already in use"
-	TagInUse           = "tag already in use"
-	AuthNotSupported   = "authentication not supported"
-	AuthRequired       = "authentication required"
-	NoSuchService      = "no such service"
-	ResponseTooLong    = "response too long"
-	UnknownFid         = "unknown fid"
-	FidOpen            = "fid is open"
-	FidNotOpen         = "fid is not open"
-	FidNotDirectory    = "fid is not a directory"
-	NoSuchFile         = "file does not exist"
-	InvalidFileName    = "invalid file name"
-	NotOpenForRead     = "file not opened for reading"
-	NotOpenForWrite    = "file not opened for writing"
-	UnsupportedMessage = "message not supported"
-	InvalidOpOnFid     = "invalid operation on file"
-	AfidNotAuthFile    = "afid is not a valid auth file"
-	PermissionDenied   = "permission denied"
+	FidInUse            = "fid already in use"
+	TagInUse            = "tag already in use"
+	AuthNotSupported    = "authentication not supported"
+	AuthRequired        = "authentication required"
+	NoSuchService       = "no such service"
+	ResponseTooLong     = "response too long"
+	UnknownFid          = "unknown fid"
+	FidOpen             = "fid is open"
+	FidNotOpen          = "fid is not open"
+	FidNotDirectory     = "fid is not a directory"
+	NoSuchFile          = "file does not exist"
+	InvalidFileName     = "invalid file name"
+	NotOpenForRead      = "file not opened for reading"
+	NotOpenForWrite     = "file not opened for writing"
+	UnsupportedMessage  = "message not supported"
+	InvalidOpOnFid      = "invalid operation on file"
+	AfidNotAuthFile     = "afid is not a valid auth file"
+	PermissionDenied    = "permission denied"
+	ResponseTooBig      = "response too big"
+	MessageSizeTooSmall = "version: message size too small"
+)
+
+var (
+	// ErrCouldNotSendErr indicates that we were unable to send an error
+	// response.
+	ErrCouldNotSendErr = errors.New("could not send error")
+
+	// ErrEncMessageSizeMismatch indicates that the message encoder and the
+	// fileserver disagrees on the max msgsize. That is, the encoder thought
+	// the message violated the max msgsize, but the fileserver thoguht it
+	// didn't.
+	ErrEncMessageSizeMismatch = errors.New("encoder and fileserver disagrees on messagesize")
 )
 
 const (
-	// MaxSize is the maximum negotiable message size.
-	MaxSize = 10 * 1024 * 1024
+	// MessageSize is the maximum negotiable message size.
+	MessageSize = 10 * 1024 * 1024
 
 	// MinSize is the minimum size that will be accepted.
-	MinSize = 128
+	MinSize = 256
 )
 
 // Verbosity is the verbosity level of the server.
@@ -98,8 +113,6 @@ type fidState struct {
 // 4. FileServer does not care if the tag of a Version request is NOTAG.
 //
 // 5. FileServer permits explicit walks to ".".
-//
-// 6. FileServer does not enforce maxsize (hopefully a temporary limitation).
 type FileServer struct {
 	// Verbosity is the verbosity level.
 	Verbosity Verbosity
@@ -115,20 +128,21 @@ type FileServer struct {
 	AuthFile trees.File
 
 	// internal
-	dead error
+	error error
 
 	// It is important that the locks below are only held during the immediate
 	// manipulation of the maps they are associated with. That also includes
 	// the read locks. Holding it for the full duration of a potentially
 	// blocking call such as read/write will lead to unwanted queueing of
 	// requests, including Flush and Clunk.
-	fidLock sync.RWMutex
-	tagLock sync.Mutex
+	fidLock   sync.RWMutex
+	tagLock   sync.Mutex
+	errorLock sync.Mutex
 
 	// session data
-	MaxSize uint32
-	fids    map[qp.Fid]*fidState
-	tags    map[qp.Tag]bool
+	MessageSize uint32
+	fids        map[qp.Fid]*fidState
+	tags        map[qp.Tag]bool
 
 	// Codecs
 	Encoder *qp.Encoder
@@ -170,6 +184,17 @@ func (fs *FileServer) logresp(t qp.Tag, m qp.Message) {
 	}
 }
 
+// die stops the server and records the first error.
+func (fs *FileServer) die(err error) error {
+	fs.errorLock.Lock()
+	defer fs.errorLock.Unlock()
+	if fs.error == nil {
+		fs.error = err
+	}
+	fs.cleanup()
+	return fs.error
+}
+
 // respond sends a response if the tag is still queued. The tag is removed
 // immediately after checking its existence. It marks the fileserver as broken
 // on error by setting fs.dead to the error, which must break the server loop.
@@ -191,19 +216,40 @@ func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
 	err := fs.Encoder.WriteMessage(m)
 	switch err {
 	case qp.ErrMessageTooBig:
+		errmsg := ResponseTooBig
+
 		if e, ok := m.(*qp.ErrorResponse); ok {
-			if e.Error == "response too big" {
-				fs.dead = errors.New("unable to send message size error")
-				fs.Stop()
+			// We do a bit of special handling if the failed message was an
+			// error. We're supposed to cut the size down.
+
+			// Calc the size to chop the message up to.
+			max := int(fs.MessageSize - qp.HeaderSize - 4)
+
+			switch {
+			case e.Error == ResponseTooBig:
+				// Okay, we're done for. We can't even say the message was too
+				// big.
+				fs.die(ErrCouldNotSendErr)
+				return
+			case max < 16:
+				// We should only end up here if someone intentionally messed up
+				// our maxsize.
+				fs.die(ErrCouldNotSendErr)
+				return
+			case len(e.Error) > max:
+				errmsg = e.Error[:max]
+			default:
+				// The message was actually okay, so the encoder must be confused.
+				fs.die(ErrEncMessageSizeMismatch)
 				return
 			}
 		}
+
 		fs.addTag(t)
-		fs.sendError(t, "response too big")
+		fs.sendError(t, errmsg)
 		return
 	default:
-		fs.dead = err
-		fs.Stop()
+		fs.die(err)
 	case nil:
 		return
 	}
@@ -361,18 +407,18 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 	fs.logreq(r.Tag, r)
 
 	versionstr := r.Version
-	maxsize := r.MaxSize
-	if maxsize > fs.MaxSize {
-		maxsize = fs.MaxSize
-	} else if maxsize < MinSize {
-		// This makes no sense. Try to force the client up a bit.
-		// NOTE(kl): Should we rather just return an unknown version response?
-		maxsize = MinSize
+	msgsize := r.MessageSize
+	if msgsize > fs.MessageSize {
+		msgsize = fs.MessageSize
+	} else if msgsize < MinSize {
+		// This makes no sense. Error out.
+		fs.sendError(r.Tag, MessageSizeTooSmall)
+		return
 	}
 
-	fs.MaxSize = maxsize
-	fs.Encoder.SetMaxSize(maxsize)
-	fs.Decoder.SetMaxSize(maxsize)
+	fs.MessageSize = msgsize
+	fs.Encoder.MessageSize = msgsize
+	fs.Decoder.MessageSize = msgsize
 
 	// We change the protocol codec here if necessary. This only works because
 	// the server loop is currently blocked. Had it continued ahead, blocking
@@ -391,8 +437,8 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 
 	// Modifying protocol is safe, as we're stuck in a blocking callback from
 	// the Decoder.
-	fs.Encoder.SetProtocol(proto)
-	fs.Decoder.SetProtocol(proto)
+	fs.Encoder.Protocol = proto
+	fs.Decoder.Protocol = proto
 
 	// Tversion resets everything
 	fs.cleanup()
@@ -400,15 +446,12 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 	fs.addTag(r.Tag)
 
 	fs.respond(r.Tag, &qp.VersionResponse{
-		Tag:     r.Tag,
-		MaxSize: maxsize,
-		Version: versionstr,
+		Tag:         r.Tag,
+		MessageSize: msgsize,
+		Version:     versionstr,
 	})
 }
 
-// auth currently just sends an error to inform the client that auth is not
-// required. In the near future, it should allow external implementation of an
-// auth algo, exposed through the file abstraction.
 func (fs *FileServer) auth(r *qp.AuthRequest) {
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
@@ -757,14 +800,14 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 	}
 
 	// We try to cap things to the negotiated maxsize
-	count := int(fs.MaxSize) - (4 + qp.HeaderSize)
+	count := int(fs.MessageSize) - qp.ReadOverhead
 	if count > int(r.Count) {
 		count = int(r.Count)
 	}
 
 	b := make([]byte, count)
 
-	_, err := handle.Seek(int64(r.Offset), 0)
+	_, err := handle.Seek(int64(r.Offset), os.SEEK_SET)
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return
@@ -818,7 +861,7 @@ func (fs *FileServer) write(r *qp.WriteRequest) {
 		return
 	}
 
-	_, err := handle.Seek(int64(r.Offset), 0)
+	_, err := handle.Seek(int64(r.Offset), os.SEEK_SET)
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return
@@ -1038,16 +1081,16 @@ func (fs *FileServer) received(m qp.Message) error {
 	return nil
 }
 
-// Start starts the response parsing loop.
-func (fs *FileServer) Start() error {
-	fs.dead = fs.Decoder.Run()
-	fs.cleanup()
-	return fs.dead
-}
-
-// Stop stops the response parsing loop.
-func (fs *FileServer) Stop() {
-	fs.Decoder.Stop()
+// Serve starts the response parsing loop.
+func (fs *FileServer) Serve() error {
+	for fs.error == nil {
+		m, err := fs.Decoder.NextMessage()
+		if err != nil {
+			return fs.die(err)
+		}
+		fs.received(m)
+	}
+	return fs.error
 }
 
 // New constructs a new FileServer. roots is the map where the fileserver
@@ -1059,21 +1102,21 @@ func New(rw io.ReadWriter, defaultRoot trees.Dir, roots map[string]trees.Dir) *F
 		DefaultRoot: defaultRoot,
 		Roots:       roots,
 		Verbosity:   Quiet,
-		MaxSize:     MaxSize,
+		MessageSize: MessageSize,
 		tags:        make(map[qp.Tag]bool),
 	}
 
 	fs.Encoder = &qp.Encoder{
-		Protocol: qp.NineP2000,
-		Writer:   rw,
-		MaxSize:  MaxSize,
+		Protocol:    qp.NineP2000,
+		Writer:      rw,
+		MessageSize: MessageSize,
 	}
 
 	fs.Decoder = &qp.Decoder{
-		Protocol: qp.NineP2000,
-		Reader:   rw,
-		Callback: fs.received,
-		MaxSize:  MaxSize,
+		Protocol:    qp.NineP2000,
+		Reader:      rw,
+		MessageSize: MessageSize,
+		Greedy:      true,
 	}
 
 	return fs

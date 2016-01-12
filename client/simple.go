@@ -69,7 +69,7 @@ func (c *SimpleClient) setup(username, servicename string) error {
 }
 
 // walkTo splits the provided filepath on "/", performing the filewalk.
-func (c *SimpleClient) walkTo(file string) (Fid, qp.Qid, error) {
+func (c *SimpleClient) walkTo(file string) (Fid, []qp.Qid, error) {
 	s := strings.Split(file, "/")
 
 	var strs []string
@@ -81,18 +81,18 @@ func (c *SimpleClient) walkTo(file string) (Fid, qp.Qid, error) {
 	s = strs
 
 	if len(s) == 0 {
-		return nil, qp.Qid{}, ErrInvalidPath
+		return nil, nil, ErrInvalidPath
 	}
 
 	fid, qids, err := c.root.Walk(s)
 	if err != nil {
-		return nil, qp.Qid{}, err
+		return nil, nil, err
 	}
 	if fid == nil {
-		return nil, qp.Qid{}, ErrNoSuchFile
+		return nil, nil, ErrNoSuchFile
 	}
 
-	return fid, qids[len(qids)-1], nil
+	return fid, qids, nil
 }
 
 // Stat returns the qp.Stat structure of the file.
@@ -272,7 +272,7 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 	}
 
 	x := New(conn)
-	go x.Start()
+	go x.Serve()
 	c.c = x
 
 	err = c.setup(username, servicename)
@@ -286,7 +286,7 @@ func (c *SimpleClient) Dial(network, address, username, servicename string) erro
 // provided io.ReadWriter. It does not support authentication.
 func (c *SimpleClient) Connect(rw io.ReadWriter, username, servicename string) error {
 	x := New(rw)
-	go x.Start()
+	go x.Serve()
 
 	c.c = x
 

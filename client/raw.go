@@ -40,8 +40,9 @@ type RawClient struct {
 	encoder *qp.Encoder
 	decoder *qp.Decoder
 
-	// dead stores any run-loop errors.
-	dead error
+	// error stores any run-loop errors.
+	error     error
+	errorLock sync.Mutex
 
 	// queue stores a response channel per message tag.
 	queue     map[qp.Tag]chan qp.Message
@@ -52,6 +53,16 @@ type RawClient struct {
 
 	// msgsize is the maximum set message size.
 	msgsize uint32
+}
+
+func (c *RawClient) die(err error) error {
+	c.errorLock.Lock()
+	defer c.errorLock.Unlock()
+	if c.error == nil {
+		c.error = err
+	}
+	c.Stop()
+	return c.error
 }
 
 func (c *RawClient) setChannel(t qp.Tag) chan qp.Message {
@@ -159,8 +170,7 @@ func (c *RawClient) Send(m qp.Message) (qp.Message, error) {
 
 	err := c.encoder.WriteMessage(m)
 	if err != nil {
-		c.dead = err
-		return nil, err
+		return nil, c.die(err)
 	}
 
 	return <-ch, nil
@@ -190,21 +200,30 @@ func (c *RawClient) PendingTags() []qp.Tag {
 func (c *RawClient) SetProtocol(p qp.Protocol) {
 	// We take the writeLock to ensure that no one is trying to write
 	// messages.
-	c.encoder.SetProtocol(p)
-	c.decoder.SetProtocol(p)
+	c.encoder.Protocol = p
+	c.decoder.Protocol = p
 }
 
-// SetReadWriter sets the io.ReadWriter used for message de/encoding.
+// SetReadWriter sets the io.ReadWriter used for message de/encoding. It is
+// safe assuming the safe conditions for SetProtocol are present and the
+// greedy decoding flag have not been enabled.
 func (c *RawClient) SetReadWriter(rw io.ReadWriter) {
-	c.encoder.SetWriter(rw)
-	c.decoder.SetReader(rw)
+	c.encoder.Writer = rw
+	c.decoder.Reader = rw
 }
 
-// SetMessageSize sets the maxsimum message size.
+// SetMessageSize sets the maximum message size. It does not reallocate the
+// decoding buffer.
 func (c *RawClient) SetMessageSize(ms uint32) {
 	c.msgsize = ms
-	c.encoder.SetMessageSize(ms)
-	c.decoder.SetMessageSize(ms)
+	c.encoder.MessageSize = ms
+	c.decoder.MessageSize = ms
+}
+
+// SetGreedyDecoding sets the greedy flag for the decoder. When set, changing
+// the readwriter becomes unsafe.
+func (c *RawClient) SetGreedyDecoding(g bool) {
+	c.decoder.Greedy = g
 }
 
 // MessageSize returns the maximum message size.
@@ -212,15 +231,20 @@ func (c *RawClient) MessageSize() uint32 {
 	return c.msgsize
 }
 
-// Start starts the response parsing loop.
-func (c *RawClient) Start() error {
-	return c.decoder.Run()
+// Serve executes the response parsing loop.
+func (c *RawClient) Serve() error {
+	for {
+		m, err := c.decoder.NextMessage()
+		if err != nil {
+			return c.die(err)
+		}
+		c.received(m)
+	}
 }
 
 // Stop terminates the reading loop.
 func (c *RawClient) Stop() {
-	c.decoder.Stop()
-	c.dead = ErrStopped
+	c.die(nil)
 }
 
 // NewRawClient creates a new client.
@@ -239,8 +263,8 @@ func NewRawClient(rw io.ReadWriter) *RawClient {
 	c.decoder = &qp.Decoder{
 		Protocol:    qp.NineP2000,
 		Reader:      rw,
-		Callback:    c.received,
 		MessageSize: 16384,
+		Greedy:      true,
 	}
 
 	return c

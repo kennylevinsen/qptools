@@ -70,6 +70,6 @@ func main() {
 
 		f := fileserver.New(conn, root, nil)
 		f.Verbosity = verbosity
-		go f.Start()
+		go f.Serve()
 	}
 }

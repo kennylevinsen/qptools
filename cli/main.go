@@ -172,21 +172,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "\n")
 			return nil
 		},
-		"monitor": func(s string) error {
-			if !(len(s) > 0 && s[0] == '/') {
-				s = path.Join(cwd, s)
-			}
-			fmt.Fprintf(os.Stderr, "Monitoring %s\n", s)
-			var off uint64
-			for {
-				strs, err := c.ReadSome(s, off)
-				if err != nil {
-					return err
-				}
-				off += uint64(len(strs))
-				fmt.Printf("%s", strs)
-			}
-		},
 		"get": func(s string) error {
 			args, err := parseCommandLine(s)
 			if err != nil {
@@ -216,7 +201,7 @@ func main() {
 				return errors.New("file is a directory")
 			}
 
-			fmt.Fprintf(os.Stderr, "Downloading: %s to %s [%dB]", remote, local, stat.Length)
+			fmt.Fprintf(os.Stderr, "Downloading: %s to %s [%dB]", *remote, *local, stat.Length)
 			strs, err := c.Read(*remote)
 			if err != nil {
 				return err
@@ -327,12 +312,12 @@ func main() {
 
 		f, ok := cmds[(*command)[0]]
 		if !ok {
-			fmt.Fprintf(os.Stderr, "no such command: [%s]\n", command)
+			fmt.Fprintf(os.Stderr, "no such command: [%s]\n", *command)
 			return
 		}
 		err = f(args)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "\ncommand %s failed: %v\n", command, err)
+			fmt.Fprintf(os.Stderr, "\ncommand %s failed: %v\n", *command, err)
 		}
 		return
 	}
