@@ -21,6 +21,7 @@ const (
 	AuthRequired           = "authentication required"
 	NoSuchService          = "no such service"
 	ResponseTooLong        = "response too long"
+	InvalidFid             = "invalid fid for operation"
 	UnknownFid             = "unknown fid"
 	FidOpen                = "fid is open"
 	FidNotOpen             = "fid is not open"
@@ -460,6 +461,11 @@ func (fs *FileServer) auth(r *qp.AuthRequest) {
 	}
 	fs.logreq(r.Tag, r)
 
+	if r.AuthFid == qp.NOFID {
+		fs.sendError(r.Tag, InvalidFid)
+		return
+	}
+
 	if fs.AuthFile == nil {
 		fs.sendError(r.Tag, AuthNotSupported)
 		return
@@ -505,6 +511,12 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 	}
 
 	fs.logreq(r.Tag, r)
+
+	if r.Fid == qp.NOFID {
+		fs.sendError(r.Tag, InvalidFid)
+		return
+	}
+
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 
@@ -603,6 +615,11 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 	}
 
 	fs.logreq(r.Tag, r)
+
+	if r.NewFid == qp.NOFID {
+		fs.sendError(r.Tag, InvalidFid)
+		return
+	}
 
 	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
