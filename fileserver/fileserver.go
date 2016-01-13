@@ -15,26 +15,27 @@ import (
 // fileserver will blindly return errors from the directory tree to the 9P
 // client.
 const (
-	FidInUse            = "fid already in use"
-	TagInUse            = "tag already in use"
-	AuthNotSupported    = "authentication not supported"
-	AuthRequired        = "authentication required"
-	NoSuchService       = "no such service"
-	ResponseTooLong     = "response too long"
-	UnknownFid          = "unknown fid"
-	FidOpen             = "fid is open"
-	FidNotOpen          = "fid is not open"
-	FidNotDirectory     = "fid is not a directory"
-	NoSuchFile          = "file does not exist"
-	InvalidFileName     = "invalid file name"
-	NotOpenForRead      = "file not opened for reading"
-	NotOpenForWrite     = "file not opened for writing"
-	UnsupportedMessage  = "message not supported"
-	InvalidOpOnFid      = "invalid operation on file"
-	AfidNotAuthFile     = "afid is not a valid auth file"
-	PermissionDenied    = "permission denied"
-	ResponseTooBig      = "response too big"
-	MessageSizeTooSmall = "version: message size too small"
+	FidInUse               = "fid already in use"
+	TagInUse               = "tag already in use"
+	AuthNotSupported       = "authentication not supported"
+	AuthRequired           = "authentication required"
+	NoSuchService          = "no such service"
+	ResponseTooLong        = "response too long"
+	UnknownFid             = "unknown fid"
+	FidOpen                = "fid is open"
+	FidNotOpen             = "fid is not open"
+	FidNotDirectory        = "fid is not a directory"
+	NoSuchFile             = "file does not exist"
+	InvalidFileName        = "invalid file name"
+	NotOpenForRead         = "file not opened for reading"
+	NotOpenForWrite        = "file not opened for writing"
+	UnsupportedMessage     = "message not supported"
+	InvalidOpOnFid         = "invalid operation on file"
+	AfidNotAuthFile        = "afid is not a valid auth file"
+	PermissionDenied       = "permission denied"
+	ResponseTooBig         = "response too big"
+	MessageSizeTooSmall    = "version: message size too small"
+	IncorrectTagForVersion = "version: tag must be NOTAG"
 )
 
 var (
@@ -84,8 +85,7 @@ type fidState struct {
 	username string
 }
 
-// FileServer serves an io.ReadWriter with the provided qp.Protocol,
-// navigating the provided trees.Dir.
+// FileServer serves an io.ReadWriter, navigating the provided file tree.
 //
 // While intended to operate by the specs, FileServer breaks spec, sometimes
 // for good, sometimes for bad in the following scenarios:
@@ -107,12 +107,7 @@ type fidState struct {
 // unnecessary complexity in order to provide a better definition of a broken
 // request.
 //
-// 3. FileServer clunks all fids when the io.ReadWriter returns an error to
-// ensure that state is cleaned up properly.
-//
-// 4. FileServer does not care if the tag of a Version request is NOTAG.
-//
-// 5. FileServer permits explicit walks to ".".
+// 3. FileServer permits explicit walks to ".".
 type FileServer struct {
 	// Verbosity is the verbosity level.
 	Verbosity Verbosity
@@ -405,6 +400,12 @@ done:
 
 func (fs *FileServer) version(r *qp.VersionRequest) {
 	fs.logreq(r.Tag, r)
+
+	if r.Tag != qp.NOTAG {
+		// Be compliant!
+		fs.sendError(r.Tag, IncorrectTagForVersion)
+		return
+	}
 
 	versionstr := r.Version
 	msgsize := r.MessageSize
