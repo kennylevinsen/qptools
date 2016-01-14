@@ -1,11 +1,12 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"os"
-	"path"
 	"strings"
 
 	"github.com/chzyer/readline"
@@ -58,247 +59,399 @@ func permToString(m qp.FileMode) string {
 	return string(x)
 }
 
+func parsepath(path string) ([]string, bool) {
+	if len(path) == 0 {
+		return nil, false
+	}
+	absolute := path[0] == '/'
+	s := strings.Split(path, "/")
+	var strs []string
+	for _, str := range s {
+		switch str {
+		case "", ".":
+		case "..":
+			if len(strs) > 0 && strs[len(strs)-1] != ".." {
+				strs = strs[:len(strs)-1]
+			} else {
+				strs = append(strs, str)
+			}
+		default:
+			strs = append(strs, str)
+		}
+	}
+	return strs, absolute
+}
+
+func readdir(b []byte) ([]qp.Stat, error) {
+	var stats []qp.Stat
+	for len(b) > 0 {
+		x := qp.Stat{}
+		l := binary.LittleEndian.Uint16(b[0:2])
+		if err := x.UnmarshalBinary(b[0 : 2+l]); err != nil {
+			return nil, err
+		}
+		b = b[2+l:]
+		stats = append(stats, x)
+	}
+
+	return stats, nil
+}
+
+var confirmation *readline.Instance
+
+func confirm(s string) bool {
+	confirmation.SetPrompt(fmt.Sprintf("%s [y]es, [n]o: ", s))
+	l, err := confirmation.Readline()
+	if err != nil {
+		return false
+	}
+
+	switch l {
+	default:
+		fmt.Fprintf(os.Stderr, "Aborting\n")
+		return false
+	case "y", "yes":
+		return true
+	}
+}
+
+var cmds = map[string]func(root, cwd client.Fid, cmdline string) (client.Fid, error){
+	"ls":    ls,
+	"cd":    cd,
+	"cat":   cat,
+	"get":   get,
+	"put":   put,
+	"mkdir": mkdir,
+}
+
+func ls(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	path, absolute := parsepath(cmdline)
+	f := cwd
+	if absolute {
+		f = root
+	}
+	var err error
+	f, _, err = f.Walk(path)
+	if err != nil {
+		return cwd, err
+	}
+	if f == nil {
+		return cwd, errors.New("no such file or directory")
+	}
+	defer f.Clunk()
+
+	_, _, err = f.Open(qp.OREAD)
+	if err != nil {
+		return cwd, err
+	}
+
+	wf := client.WrappedFid{Fid: f}
+	b, err := wf.ReadAll()
+	if err != nil {
+		return cwd, err
+	}
+
+	stats, err := readdir(b)
+	if err != nil {
+		return cwd, err
+	}
+
+	// Sort the stats. We sort alphabetically with directories first.
+	var sortedstats []qp.Stat
+	selectedstat := -1
+	for len(stats) > 0 {
+		for i := range stats {
+			if selectedstat == -1 {
+				// Nothing was selected, so we automatically win.
+				selectedstat = i
+				continue
+			}
+
+			isfile1 := stats[i].Mode&qp.DMDIR == 0
+			isfile2 := stats[selectedstat].Mode&qp.DMDIR == 0
+
+			if isfile1 && !isfile2 {
+				// The previously selected file is a dir, and we got a file, so we lose.
+				continue
+			}
+
+			if !isfile1 && isfile2 {
+				// The previously selected file is a file, and we got a dir, so we win.
+				selectedstat = i
+				continue
+			}
+
+			if stats[i].Name < stats[selectedstat].Name {
+				// We're both of the same type, but our name as lower value, so we win.
+				selectedstat = i
+				continue
+			}
+
+			// We're not special, so we lose by default.
+		}
+
+		// Append to sorted list, cut from previous list and reset selection.
+		sortedstats = append(sortedstats, stats[selectedstat])
+		stats = append(stats[:selectedstat], stats[selectedstat+1:]...)
+		selectedstat = -1
+	}
+
+	for _, stat := range sortedstats {
+		fmt.Printf("%s  %10d  %10d  %s\n", permToString(stat.Mode), stat.Qid.Version, stat.Length, stat.Name)
+	}
+	return cwd, nil
+}
+
+func cd(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	path, absolute := parsepath(cmdline)
+
+	f := cwd
+	if absolute {
+		f = root
+	}
+	var err error
+	f, _, err = f.Walk(path)
+	if err != nil {
+		return cwd, err
+	}
+	if f == nil {
+		return cwd, errors.New("no such file or directory")
+	}
+
+	cwd.Clunk()
+	return f, nil
+}
+
+func cat(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	path, absolute := parsepath(cmdline)
+
+	f := cwd
+	if absolute {
+		f = root
+	}
+	var err error
+	f, _, err = f.Walk(path)
+	if err != nil {
+		return cwd, err
+	}
+	if f == nil {
+		return cwd, errors.New("no such file or directory")
+	}
+	defer f.Clunk()
+
+	_, _, err = f.Open(qp.OREAD)
+	if err != nil {
+		return cwd, err
+	}
+
+	wf := client.WrappedFid{Fid: f}
+	b, err := wf.ReadAll()
+	if err != nil {
+		return cwd, err
+	}
+
+	fmt.Printf("%s", b)
+	fmt.Fprintf(os.Stderr, "\n")
+
+	return cwd, nil
+}
+
+func get(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	args, err := parseCommandLine(cmdline)
+	if err != nil {
+		return cwd, err
+	}
+	cmd := kingpin.New("get", "")
+	remote := cmd.Arg("remote", "remote filename").Required().String()
+	local := cmd.Arg("local", "local filename").Required().String()
+	_, err = cmd.Parse(args)
+	if err != nil {
+		return cwd, err
+	}
+
+	remotepath, absolute := parsepath(*remote)
+	lf, err := os.Create(*local)
+	if err != nil {
+		return cwd, err
+	}
+
+	f := cwd
+	if absolute {
+		f = root
+	}
+	f, _, err = f.Walk(remotepath)
+	if err != nil {
+		return cwd, err
+	}
+	if f == nil {
+		return cwd, err
+	}
+	defer f.Clunk()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return cwd, err
+	}
+	if stat.Mode&qp.DMDIR != 0 {
+		return cwd, errors.New("file is a directory")
+	}
+	_, _, err = f.Open(qp.OREAD)
+	if err != nil {
+		return cwd, err
+	}
+
+	fmt.Fprintf(os.Stderr, "Downloading: %s to %s [%dB]", *remote, *local, stat.Length)
+	wf := client.WrappedFid{Fid: f}
+	strs, err := wf.ReadAll()
+	if err != nil {
+		return cwd, err
+	}
+	fmt.Fprintf(os.Stderr, " - Downloaded %dB.\n", len(strs))
+	for len(strs) > 0 {
+		n, err := lf.Write(strs)
+		if err != nil {
+			return cwd, err
+		}
+		strs = strs[n:]
+	}
+
+	return cwd, nil
+}
+
+func put(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	args, err := parseCommandLine(cmdline)
+	if err != nil {
+		return cwd, err
+	}
+	cmd := kingpin.New("put", "")
+	local := cmd.Arg("local", "local filename").Required().String()
+	remote := cmd.Arg("remote", "remote filename").Required().String()
+	_, err = cmd.Parse(args)
+	if err != nil {
+		return cwd, err
+	}
+
+	strs, err := ioutil.ReadFile(*local)
+	if err != nil {
+		return cwd, err
+	}
+
+	remotepath, absolute := parsepath(*remote)
+	if len(remotepath) == 0 {
+		return cwd, errors.New("need a destination")
+	}
+	f := cwd
+	if absolute {
+		f = root
+	}
+	f, _, err = f.Walk(remotepath[:len(remotepath)-1])
+	if err != nil {
+		return cwd, err
+	}
+	if f == nil {
+		return cwd, err
+	}
+	defer f.Clunk()
+
+	_, _, err = f.Create(remotepath[len(remotepath)-1], 0666, qp.OWRITE)
+	if err != nil {
+		if !confirm("File exists. Do you want to overwrite it?") {
+			return cwd, nil
+		}
+		_, _, err := f.Open(qp.OTRUNC)
+		if err != nil {
+			return cwd, err
+		}
+	}
+
+	wf := &client.WrappedFid{Fid: f}
+	fmt.Fprintf(os.Stderr, "Uploading: %s to %s [%dB]", *local, *remote, len(strs))
+	err = wf.WriteAll(strs)
+	if err != nil {
+		return cwd, err
+	}
+
+	return cwd, nil
+}
+
+func mkdir(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	remotepath, absolute := parsepath(cmdline)
+	if len(remotepath) == 0 {
+		return cwd, errors.New("need a destination")
+	}
+	f := cwd
+	if absolute {
+		f = root
+	}
+
+	fid, _, err := f.Walk(remotepath[:len(remotepath)-1])
+	if err != nil {
+		return cwd, err
+	}
+	if fid == nil {
+		return cwd, err
+	}
+	defer fid.Clunk()
+	_, _, err = fid.Create(remotepath[len(remotepath)-1], 0666|qp.DMDIR, qp.OREAD)
+	return cwd, err
+}
+
+func rm(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	remotepath, absolute := parsepath(cmdline)
+	if len(remotepath) == 0 {
+		return cwd, errors.New("need a destination")
+	}
+	f := cwd
+	if absolute {
+		f = root
+	}
+
+	fid, _, err := f.Walk(remotepath)
+	if err != nil {
+		return cwd, err
+	}
+	if fid == nil {
+		return cwd, err
+	}
+	return cwd, fid.Remove()
+}
+
 func main() {
 	kingpin.Parse()
 
-	c := &client.SimpleClient{}
-	err := c.Dial("tcp", *address, *user, *service)
+	conn, err := net.Dial("tcp", *address)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Connect failed: %v\n", err)
 		return
 	}
 
-	confirmation, err := readline.New("")
-	confirm := func(s string) bool {
-		confirmation.SetPrompt(fmt.Sprintf("%s [y]es, [n]o: ", s))
-		l, err := confirmation.Readline()
+	c := client.New(conn)
+	go func() {
+		err := c.Serve()
 		if err != nil {
-			return false
+			fmt.Fprintf(os.Stderr, "\nConnection lost: %v\n", err)
+			os.Exit(-1)
 		}
+	}()
 
-		switch l {
-		default:
-			fmt.Fprintf(os.Stderr, "Aborting\n")
-			return false
-		case "y", "yes":
-			return true
-		}
+	_, _, err = c.Version(1024*1024, qp.Version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Version failed: %v\n", err)
+		return
 	}
 
-	cwd := "/"
-	loop := true
-	cmds := map[string]func(string) error{
-		"ls": func(s string) error {
-			if !(len(s) > 0 && s[0] == '/') {
-				s = path.Join(cwd, s)
-			}
-			stats, err := c.List(s)
-			if err != nil {
-				return err
-			}
+	root, _, err := c.Attach(nil, *user, *service)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Attach failed: %v\n", err)
+		return
+	}
 
-			// Sort the stats. We sort alphabetically with directories first.
-			var sortedstats []qp.Stat
-			selectedstat := -1
-			for len(stats) > 0 {
-				for i := range stats {
-					if selectedstat == -1 {
-						// Nothing was selected, so we automatically win.
-						selectedstat = i
-						continue
-					}
+	cwd := root
 
-					isfile1 := stats[i].Mode&qp.DMDIR == 0
-					isfile2 := stats[selectedstat].Mode&qp.DMDIR == 0
-
-					if isfile1 && !isfile2 {
-						// The previously selected file is a dir, and we got a file, so we lose.
-						continue
-					}
-
-					if !isfile1 && isfile2 {
-						// The previously selected file is a file, and we got a dir, so we win.
-						selectedstat = i
-						continue
-					}
-
-					if stats[i].Name < stats[selectedstat].Name {
-						// We're both of the same type, but our name as lower value, so we win.
-						selectedstat = i
-						continue
-					}
-
-					// We're not special, so we lose by default.
-				}
-
-				// Append to sorted list, cut from previous list and reset selection.
-				sortedstats = append(sortedstats, stats[selectedstat])
-				stats = append(stats[:selectedstat], stats[selectedstat+1:]...)
-				selectedstat = -1
-			}
-
-			for _, stat := range sortedstats {
-				fmt.Printf("%s  %10d  %10d  %s\n", permToString(stat.Mode), stat.Qid.Version, stat.Length, stat.Name)
-			}
-			return nil
-		},
-		"cd": func(s string) error {
-			if !(len(s) > 0 && s[0] == '/') {
-				s = path.Join(cwd, s)
-			}
-			stat, err := c.Stat(s)
-			if err != nil {
-				return err
-			}
-			if stat.Mode&qp.DMDIR == 0 {
-				return errors.New("file is not a directory")
-			}
-			cwd = s
-			return nil
-		},
-		"pwd": func(string) error {
-			fmt.Printf("%s\n", cwd)
-			return nil
-		},
-		"cat": func(s string) error {
-			if !(len(s) > 0 && s[0] == '/') {
-				s = path.Join(cwd, s)
-			}
-			strs, err := c.Read(s)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("%s", strs)
-			fmt.Fprintf(os.Stderr, "\n")
-			return nil
-		},
-		"get": func(s string) error {
-			args, err := parseCommandLine(s)
-			if err != nil {
-				return err
-			}
-			cmd := kingpin.New("put", "")
-			remote := cmd.Arg("remote", "remote filename").Required().String()
-			local := cmd.Arg("local", "local filename").Required().String()
-			_, err = cmd.Parse(args)
-			if err != nil {
-				return err
-			}
-
-			if !(len(s) > 0 && s[0] == '/') {
-				*remote = path.Join(cwd, *remote)
-			}
-			f, err := os.Create(*local)
-			if err != nil {
-				return err
-			}
-
-			stat, err := c.Stat(*remote)
-			if err != nil {
-				return err
-			}
-			if stat.Mode&qp.DMDIR != 0 {
-				return errors.New("file is a directory")
-			}
-
-			fmt.Fprintf(os.Stderr, "Downloading: %s to %s [%dB]", *remote, *local, stat.Length)
-			strs, err := c.Read(*remote)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(os.Stderr, " - Downloaded %dB.\n", len(strs))
-			for len(strs) > 0 {
-				n, err := f.Write(strs)
-				if err != nil {
-					return err
-				}
-				strs = strs[n:]
-			}
-
-			return nil
-		},
-		"put": func(s string) error {
-			args, err := parseCommandLine(s)
-			if err != nil {
-				return err
-			}
-			cmd := kingpin.New("put", "")
-			local := cmd.Arg("local", "local filename").Required().String()
-			remote := cmd.Arg("remote", "remote filename").Required().String()
-			_, err = cmd.Parse(args)
-			if err != nil {
-				return err
-			}
-
-			target := path.Join(cwd, path.Base(*remote))
-
-			strs, err := ioutil.ReadFile(*local)
-			if err != nil {
-				return err
-			}
-			stat, err := c.Stat(target)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "File does not exist. Creating file: %s", target)
-				err := c.Create(target, false)
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(os.Stderr, " - Done.\n")
-			} else {
-				if !confirm("File exists. Do you want to overwrite it?") {
-					return nil
-				}
-			}
-			if stat.Mode&qp.DMDIR != 0 {
-				return errors.New("file is a directory")
-			}
-
-			fmt.Fprintf(os.Stderr, "Uploading: %s to %s [%dB]", *local, target, len(strs))
-			err = c.Write(strs, target)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(os.Stderr, " - Done.\n")
-			return nil
-		},
-		"mv": func(s string) error {
-			args, err := parseCommandLine(s)
-			if err != nil {
-				return err
-			}
-			cmd := kingpin.New("mv", "")
-			source := cmd.Arg("source", "source filename").Required().String()
-			destination := cmd.Arg("destination", "destination filename").Required().String()
-			_, err = cmd.Parse(args)
-			if err != nil {
-				return err
-			}
-
-			return c.Rename(*source, *destination)
-		},
-		"mkdir": func(s string) error {
-			if !(len(s) > 0 && s[0] == '/') {
-				s = path.Join(cwd, s)
-			}
-			return c.Create(s, true)
-		},
-		"rm": func(s string) error {
-			if !(len(s) > 0 && s[0] == '/') {
-				s = path.Join(cwd, s)
-			}
-
-			if !confirm(fmt.Sprintf("Are you sure you want to delete %s?", s)) {
-				return nil
-			}
-
-			fmt.Fprintf(os.Stderr, "Deleting %s\n", s)
-			return c.Remove(s)
-		},
-		"quit": func(string) error {
-			fmt.Fprintf(os.Stderr, "bye\n")
-			loop = false
-			return nil
-		},
+	confirmation, err = readline.New("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not make confirmation readline instance: %v\n", err)
+		return
 	}
 
 	if len(*command) > 0 {
@@ -315,7 +468,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "no such command: [%s]\n", *command)
 			return
 		}
-		err = f(args)
+		cwd, err = f(root, cwd, args)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\ncommand %s failed: %v\n", *command, err)
 		}
@@ -341,7 +494,7 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "Welcome to the qptools 9P cli.\nPress tab to see available commands.\n")
 
-	for loop {
+	for {
 		line, err := rl.Readline()
 		if err != nil { // io.EOF
 			break
@@ -361,7 +514,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "no such command: [%s]\n", cmd)
 			continue
 		}
-		err = f(args)
+		cwd, err = f(root, cwd, args)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\ncommand %s failed: %v\n", cmd, err)
 		}
