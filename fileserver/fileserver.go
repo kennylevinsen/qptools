@@ -74,9 +74,9 @@ const (
 // fidState is the internal state associated with a fid.
 type fidState struct {
 	// It is important that the lock is only hold during the immediate
-	// manipulation of the state. That also includes the read lock. Holding it for
-	// the full duration of a potentially blocking call such as read/write will
-	// lead to unwanted queueing of requests, including Flush and Clunk.
+	// manipulation of the state. That also includes the read lock. Holding it
+	// for the full duration of a potentially blocking call such as read/write
+	// will lead to unwanted queuing of requests, including Flush and Clunk.
 	sync.RWMutex
 
 	location FilePath
@@ -129,7 +129,7 @@ type FileServer struct {
 	// It is important that the locks below are only held during the immediate
 	// manipulation of the maps they are associated with. That also includes
 	// the read locks. Holding it for the full duration of a potentially
-	// blocking call such as read/write will lead to unwanted queueing of
+	// blocking call such as read/write will lead to unwanted queuing of
 	// requests, including Flush and Clunk.
 	fidLock   sync.RWMutex
 	tagLock   sync.Mutex

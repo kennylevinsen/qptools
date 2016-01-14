@@ -71,7 +71,7 @@ func (f *MapFile) query(cmd []byte) []byte {
 	return cmd[consumed:]
 }
 
-// NewMapFile returns an initialised MapFile.
+// NewMapFile returns an initialized MapFile.
 func NewMapFile(name string, perm qp.FileMode, user, group string) *MapFile {
 	m := &MapFile{
 		store: make(map[string]string),
