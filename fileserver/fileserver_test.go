@@ -133,7 +133,7 @@ func version(version string, tag qp.Tag, msize int, fs *FileServer, dbg *debugRW
 
 	m, err := dbg.NextMessage()
 	if err != nil {
-		t.Fatalf("%s:%d: version failed: %v", err)
+		t.Fatalf("%s:%d: version failed: %v", filepath.Base(file), line, err)
 	}
 
 	vm, ok := m.(*qp.VersionResponse)
