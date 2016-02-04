@@ -138,6 +138,9 @@ func (dc *Client) Version(msgsize uint32, version string) (uint32, string, error
 		return 0, "", ErrWeirdResponse
 	}
 
+	dc.client.SetMessageSize(msgsize)
+	dc.client.SetGreedyDecoding(true)
+
 	return vresp.MessageSize, vresp.Version, nil
 }
 
