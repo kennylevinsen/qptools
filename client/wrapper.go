@@ -65,22 +65,20 @@ func (wf *WrappedFid) ReadAt(p []byte, off int64) (int, error) {
 // ReadAll reads the full content of a file, starting at offset 0.
 func (wf *WrappedFid) ReadAll() ([]byte, error) {
 	var (
-		p    []byte
-		b    []byte
-		o    uint64
-		read int
-		err  error
+		p   []byte
+		b   []byte
+		o   uint64
+		err error
 	)
 	for {
-		b, err = wf.Fid.ReadOnce(o, 16*1026)
+		b, err = wf.Fid.ReadOnce(o, wf.Fid.MessageSize())
 		if err != nil {
 			return p, err
 		}
 		if len(b) == 0 {
 			break
 		}
-		copy(p[read:], b)
-		read += len(b)
+		p = append(p, b...)
 		o += uint64(len(b))
 	}
 
@@ -102,6 +100,9 @@ func (wf *WrappedFid) WriteAt(p []byte, off int64) (int, error) {
 		return 0, errors.New("cannot read from negative offset")
 	}
 	ms := wf.Fid.MessageSize() - qp.WriteOverhead
+	if ms > uint32(len(p)) {
+		ms = uint32(len(p))
+	}
 	o := uint64(off)
 	for len(p) > 0 {
 		n, err := wf.Fid.WriteOnce(o, p[:ms])
@@ -118,6 +119,9 @@ func (wf *WrappedFid) WriteAt(p []byte, off int64) (int, error) {
 // WriteAll writes the entire slice to the file, starting at offset 0.
 func (wf *WrappedFid) WriteAll(p []byte) error {
 	ms := wf.Fid.MessageSize() - qp.WriteOverhead
+	if ms > uint32(len(p)) {
+		ms = uint32(len(p))
+	}
 	var o uint64
 	for len(p) > 0 {
 		n, err := wf.Fid.WriteOnce(o, p[:ms])
