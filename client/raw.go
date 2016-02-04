@@ -61,7 +61,6 @@ func (c *RawClient) die(err error) error {
 	if c.error == nil {
 		c.error = err
 	}
-	c.Stop()
 	return c.error
 }
 
@@ -218,6 +217,7 @@ func (c *RawClient) SetMessageSize(ms uint32) {
 	c.msgsize = ms
 	c.encoder.MessageSize = ms
 	c.decoder.MessageSize = ms
+	c.decoder.Reset()
 }
 
 // SetGreedyDecoding sets the greedy flag for the decoder. When set, changing
@@ -238,7 +238,9 @@ func (c *RawClient) Serve() error {
 		if err != nil {
 			return c.die(err)
 		}
-		c.received(m)
+		if err = c.received(m); err != nil {
+			return c.die(err)
+		}
 	}
 }
 
@@ -264,7 +266,6 @@ func NewRawClient(rw io.ReadWriter) *RawClient {
 		Protocol:    qp.NineP2000,
 		Reader:      rw,
 		MessageSize: 16384,
-		Greedy:      true,
 	}
 
 	return c
