@@ -20,7 +20,6 @@ const (
 var (
 	ErrNotADirectory          = errors.New("not a directory")
 	ErrInvalidPath            = errors.New("invalid path")
-	ErrNoSuchFile             = errors.New("no such file")
 	ErrUnknownProtocol        = errors.New("unknown protocol")
 	ErrSimpleClientNotStarted = errors.New("client not started")
 )

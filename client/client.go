@@ -19,6 +19,10 @@ var (
 
 	// ErrNoSuchFid indicates that the fid does not exist.
 	ErrNoSuchFid = errors.New("no such fid")
+
+	// ErrNoSuchFile indicates that the file didn't exist, although the walk was
+	// a success.
+	ErrNoSuchFile = errors.New("no such file or directory")
 )
 
 func toError(m qp.Message) error {
@@ -278,7 +282,7 @@ func (f *fid) Walk(names []string) (Fid, []qp.Qid, error) {
 
 	if len(wresp.Qids) != len(names) {
 		f.parent.rmFid(nfid)
-		nfid = nil
+		return nil, wresp.Qids, ErrNoSuchFile
 	}
 	return nfid, wresp.Qids, nil
 }
