@@ -5,7 +5,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime/debug"
 	"sync"
+	"sync/atomic"
 
 	"github.com/joushou/qp"
 	"github.com/joushou/qptools/fileserver/trees"
@@ -49,6 +51,9 @@ var (
 	// the message violated the max msgsize, but the fileserver thoguht it
 	// didn't.
 	ErrEncMessageSizeMismatch = errors.New("encoder and fileserver disagrees on messagesize")
+
+	// ErrHandlerPanic indicates that a handler panicked.
+	ErrHandlerPanic = errors.New("handler panicked")
 )
 
 const (
@@ -134,6 +139,7 @@ type FileServer struct {
 	fidLock   sync.RWMutex
 	tagLock   sync.Mutex
 	errorLock sync.Mutex
+	errorCnt  uint32
 
 	// session data
 	MessageSize uint32
@@ -187,8 +193,19 @@ func (fs *FileServer) die(err error) error {
 	if fs.error == nil {
 		fs.error = err
 	}
+	atomic.AddUint32(&fs.errorCnt, 1)
+
 	fs.cleanup()
 	return fs.error
+}
+
+// handlePanic logs and prints
+func (fs *FileServer) handlePanic() {
+	r := recover()
+	if r != nil {
+		log.Printf("fileserver: Panic while handling request: %v\n\n%s\n", r, debug.Stack())
+		fs.die(ErrHandlerPanic)
+	}
 }
 
 // respond sends a response if the tag is still queued. The tag is removed
@@ -400,6 +417,7 @@ done:
 }
 
 func (fs *FileServer) version(r *qp.VersionRequest) {
+	defer fs.handlePanic()
 	fs.logreq(r.Tag, r)
 
 	if r.Tag != qp.NOTAG {
@@ -455,6 +473,7 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 }
 
 func (fs *FileServer) auth(r *qp.AuthRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -505,6 +524,7 @@ func (fs *FileServer) auth(r *qp.AuthRequest) {
 }
 
 func (fs *FileServer) attach(r *qp.AttachRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -596,6 +616,7 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 }
 
 func (fs *FileServer) flush(r *qp.FlushRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -609,6 +630,7 @@ func (fs *FileServer) flush(r *qp.FlushRequest) {
 }
 
 func (fs *FileServer) walk(r *qp.WalkRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -658,6 +680,7 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 }
 
 func (fs *FileServer) open(r *qp.OpenRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -709,6 +732,7 @@ func (fs *FileServer) open(r *qp.OpenRequest) {
 }
 
 func (fs *FileServer) create(r *qp.CreateRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -786,6 +810,7 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 }
 
 func (fs *FileServer) read(r *qp.ReadRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -848,6 +873,7 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 }
 
 func (fs *FileServer) write(r *qp.WriteRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -898,6 +924,7 @@ func (fs *FileServer) write(r *qp.WriteRequest) {
 }
 
 func (fs *FileServer) clunk(r *qp.ClunkRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -929,6 +956,7 @@ func (fs *FileServer) clunk(r *qp.ClunkRequest) {
 }
 
 func (fs *FileServer) remove(r *qp.RemoveRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -977,6 +1005,7 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 }
 
 func (fs *FileServer) stat(r *qp.StatRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -1015,6 +1044,7 @@ func (fs *FileServer) stat(r *qp.StatRequest) {
 }
 
 func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
+	defer fs.handlePanic()
 	if err := fs.addTag(r.Tag); err != nil {
 		fs.sendError(r.Tag, TagInUse)
 		return
@@ -1056,6 +1086,7 @@ func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 }
 
 func (fs *FileServer) unsupported(r qp.Message) {
+	defer fs.handlePanic()
 	t := r.GetTag()
 	if err := fs.addTag(t); err != nil {
 		fs.sendError(t, TagInUse)
@@ -1101,13 +1132,15 @@ func (fs *FileServer) received(m qp.Message) error {
 
 // Serve starts the response parsing loop.
 func (fs *FileServer) Serve() error {
-	for fs.error == nil {
+	for atomic.LoadUint32(&fs.errorCnt) == 0 {
 		m, err := fs.Decoder.NextMessage()
 		if err != nil {
 			return fs.die(err)
 		}
 		fs.received(m)
 	}
+	fs.errorLock.Lock()
+	defer fs.errorLock.Unlock()
 	return fs.error
 }
 
