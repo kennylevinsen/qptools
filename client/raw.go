@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/joushou/qp"
 )
@@ -43,6 +44,7 @@ type RawClient struct {
 	// error stores any run-loop errors.
 	error     error
 	errorLock sync.Mutex
+	errorCnt  uint32
 
 	// queue stores a response channel per message tag.
 	queue     map[qp.Tag]chan qp.Message
@@ -61,6 +63,7 @@ func (c *RawClient) die(err error) error {
 	if c.error == nil {
 		c.error = err
 	}
+	atomic.AddUint32(&c.errorCnt, 1)
 	return c.error
 }
 
@@ -233,7 +236,7 @@ func (c *RawClient) MessageSize() uint32 {
 
 // Serve executes the response parsing loop.
 func (c *RawClient) Serve() error {
-	for {
+	for atomic.LoadUint32(&c.errorCnt) == 0 {
 		m, err := c.decoder.NextMessage()
 		if err != nil {
 			return c.die(err)
@@ -242,6 +245,10 @@ func (c *RawClient) Serve() error {
 			return c.die(err)
 		}
 	}
+
+	c.errorLock.Lock()
+	defer c.errorLock.Unlock()
+	return c.error
 }
 
 // Stop terminates the reading loop.
