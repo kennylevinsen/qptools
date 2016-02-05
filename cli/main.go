@@ -135,9 +135,6 @@ func ls(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 	if err != nil {
 		return cwd, err
 	}
-	if f == nil {
-		return cwd, errors.New("no such file or directory")
-	}
 	defer f.Clunk()
 
 	_, _, err = f.Open(qp.OREAD)
@@ -214,9 +211,6 @@ func cd(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 	if err != nil {
 		return cwd, err
 	}
-	if f == nil {
-		return cwd, errors.New("no such file or directory")
-	}
 
 	cwd.Clunk()
 	return f, nil
@@ -233,9 +227,6 @@ func cat(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 	f, _, err = f.Walk(path)
 	if err != nil {
 		return cwd, err
-	}
-	if f == nil {
-		return cwd, errors.New("no such file or directory")
 	}
 	defer f.Clunk()
 
@@ -281,9 +272,6 @@ func get(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 	}
 	f, _, err = f.Walk(remotepath)
 	if err != nil {
-		return cwd, err
-	}
-	if f == nil {
 		return cwd, err
 	}
 	defer f.Clunk()
@@ -346,9 +334,6 @@ func put(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 	}
 	f, _, err = f.Walk(remotepath[:len(remotepath)-1])
 	if err != nil {
-		return cwd, err
-	}
-	if f == nil {
 		return cwd, err
 	}
 	defer f.Clunk()
