@@ -280,25 +280,27 @@ func (d *SyntheticDir) Remove(user, name string) error {
 
 func (d *SyntheticDir) Walk(user, name string) (File, error) {
 	d.Lock()
-	defer d.Unlock()
 	owner := d.UID == user
 	if !permCheck(owner, d.Permissions, qp.OEXEC) {
+		d.Unlock()
 		return nil, errors.New("access denied")
 	}
 
 	d.Atime = time.Now()
 	for i := range d.Tree {
 		if i == name {
-			if o, ok := d.Tree[i].(MagicWalk); ok {
+			o, ok := d.Tree[i].(MagicWalk)
+			d.Unlock()
+			if ok {
 				// We could potentially end up trying to retake these locks.
-				d.Unlock()
 				r, err := o.MagicWalk(user)
-				d.Lock()
 				return r, err
 			}
 			return d.Tree[i], nil
 		}
 	}
+
+	d.Unlock()
 	return nil, nil
 }
 
