@@ -211,8 +211,8 @@ func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, e
 
 	if isdir {
 		return &ListHandle{
-			dir:  pf,
-			user: user,
+			Dir:  pf,
+			User: user,
 		}, nil
 	}
 

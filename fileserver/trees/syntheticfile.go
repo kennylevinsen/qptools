@@ -269,7 +269,7 @@ func (f *SyntheticFile) CanOpen(user string, mode qp.OpenMode) bool {
 	f.RLock()
 	defer f.RUnlock()
 	owner := f.UID == user
-	return permCheck(owner, f.Permissions, mode)
+	return PermCheck(owner, false, f.Permissions, mode)
 }
 
 // Open returns a SyntheticHandle if the open was permitted.

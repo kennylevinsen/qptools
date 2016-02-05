@@ -48,8 +48,8 @@ func (mt *MixDir) List(user string) ([]qp.Stat, error) {
 // Open return an OpenFile for the MixTree directory.
 func (mt *MixDir) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
 	return &ListHandle{
-		dir:  mt,
-		user: user,
+		Dir:  mt,
+		User: user,
 	}, nil
 }
 

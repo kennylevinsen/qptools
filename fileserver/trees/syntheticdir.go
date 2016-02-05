@@ -142,7 +142,7 @@ func (d *SyntheticDir) List(user string) ([]qp.Stat, error) {
 	defer d.RUnlock()
 	owner := d.UID == user
 
-	if !permCheck(owner, d.Permissions, qp.OREAD) {
+	if !PermCheck(owner, false, d.Permissions, qp.OREAD) {
 		return nil, errors.New("access denied")
 	}
 
@@ -161,7 +161,7 @@ func (d *SyntheticDir) CanOpen(user string, mode qp.OpenMode) bool {
 	d.RLock()
 	defer d.RUnlock()
 	owner := d.UID == user
-	return permCheck(owner, d.Permissions, mode)
+	return PermCheck(owner, false, d.Permissions, mode)
 }
 
 func (d *SyntheticDir) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
@@ -174,8 +174,8 @@ func (d *SyntheticDir) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser,
 	d.Atime = time.Now()
 	d.Opens++
 	return &ListHandle{
-		dir:  d,
-		user: user,
+		Dir:  d,
+		User: user,
 	}, nil
 }
 
@@ -187,7 +187,7 @@ func (d *SyntheticDir) Create(user, name string, perms qp.FileMode) (File, error
 	d.Lock()
 	defer d.Unlock()
 	owner := d.UID == user
-	if !permCheck(owner, d.Permissions, qp.OWRITE) {
+	if !PermCheck(owner, false, d.Permissions, qp.OWRITE) {
 		return nil, errors.New("access denied")
 	}
 
@@ -256,7 +256,7 @@ func (d *SyntheticDir) Remove(user, name string) error {
 	d.Lock()
 	defer d.Unlock()
 	owner := d.UID == user
-	if !permCheck(owner, d.Permissions, qp.OWRITE) {
+	if !PermCheck(owner, false, d.Permissions, qp.OWRITE) {
 		return errors.New("access denied")
 	}
 
@@ -281,7 +281,7 @@ func (d *SyntheticDir) Remove(user, name string) error {
 func (d *SyntheticDir) Walk(user, name string) (File, error) {
 	d.Lock()
 	owner := d.UID == user
-	if !permCheck(owner, d.Permissions, qp.OEXEC) {
+	if !PermCheck(owner, false, d.Permissions, qp.OEXEC) {
 		d.Unlock()
 		return nil, errors.New("access denied")
 	}

@@ -116,8 +116,11 @@ type AccessLogger interface {
 	Closed()
 }
 
-func permCheck(owner bool, permissions qp.FileMode, mode qp.OpenMode) bool {
+func PermCheck(owner, group bool, permissions qp.FileMode, mode qp.OpenMode) bool {
 	var offset uint8
+	if group {
+		offset = 3
+	}
 	if owner {
 		offset = 6
 	}
