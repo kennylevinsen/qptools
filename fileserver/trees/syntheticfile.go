@@ -283,6 +283,10 @@ func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser
 	f.Atime = time.Now()
 	f.Opens++
 
+	if f.Content != nil && mode&qp.OTRUNC != 0 && mode&qp.OWRITE != 0 {
+		f.SetContent(nil)
+	}
+
 	return &SyntheticHandle{
 		f:          f,
 		User:       user,
