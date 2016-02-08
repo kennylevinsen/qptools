@@ -235,15 +235,20 @@ func cat(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 		return cwd, err
 	}
 
-	wf := client.WrappedFid{Fid: f}
-	b, err := wf.ReadAll()
-	if err != nil {
-		return cwd, err
+	var off uint64
+	for {
+		b, err := f.ReadOnce(off, 1024)
+		if err != nil {
+			return cwd, err
+		}
+		if len(b) == 0 {
+			break
+		}
+
+		fmt.Printf("%s", b)
 	}
 
-	fmt.Printf("%s", b)
 	fmt.Fprintf(os.Stderr, "\n")
-
 	return cwd, nil
 }
 
@@ -340,10 +345,13 @@ func put(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 
 	_, _, err = f.Create(remotepath[len(remotepath)-1], 0666, qp.OWRITE)
 	if err != nil {
-		if !confirm("File exists. Do you want to overwrite it?") {
-			return cwd, nil
+		f, _, err = f.Walk(remotepath[len(remotepath)-1:])
+		if err != nil {
+			return cwd, err
 		}
-		_, _, err := f.Open(qp.OTRUNC)
+		defer f.Clunk()
+
+		_, _, err := f.Open(qp.OTRUNC | qp.OWRITE)
 		if err != nil {
 			return cwd, err
 		}
