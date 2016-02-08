@@ -260,22 +260,23 @@ func (d *SyntheticDir) Remove(user, name string) error {
 		return errors.New("access denied")
 	}
 
-	if f, ok := d.Tree[name]; ok {
-		rem, err := f.CanRemove()
-		if err != nil {
-			return err
-		}
-		if !rem {
-			return errors.New("file could not be removed")
-		}
-		delete(d.Tree, name)
-		d.Mtime = time.Now()
-		d.Atime = d.Mtime
-		d.Version++
-		return nil
+	f, exists := d.Tree[name]
+	if !exists {
+		return errors.New("no such file")
 	}
 
-	return errors.New("no such file")
+	rem, err := f.CanRemove()
+	if err != nil {
+		return err
+	}
+	if !rem {
+		return errors.New("file could not be removed")
+	}
+	delete(d.Tree, name)
+	d.Mtime = time.Now()
+	d.Atime = d.Mtime
+	d.Version++
+	return nil
 }
 
 func (d *SyntheticDir) Walk(user, name string) (File, error) {
@@ -287,21 +288,20 @@ func (d *SyntheticDir) Walk(user, name string) (File, error) {
 	}
 
 	d.Atime = time.Now()
-	for i := range d.Tree {
-		if i == name {
-			o, ok := d.Tree[i].(MagicWalk)
-			d.Unlock()
-			if ok {
-				// We could potentially end up trying to retake these locks.
-				r, err := o.MagicWalk(user)
-				return r, err
-			}
-			return d.Tree[i], nil
-		}
+	x, exists := d.Tree[name]
+	if !exists {
+		d.Unlock()
+		return nil, nil
 	}
 
 	d.Unlock()
-	return nil, nil
+
+	if o, ok := x.(MagicWalk); ok {
+		// MagicWalk might reenter this directory for whatever reason, so in
+		// order to avoid deadlock, we can't defer unlocking.
+		return o.MagicWalk(user)
+	}
+	return x, nil
 }
 
 func (d *SyntheticDir) IsDir() (bool, error) {
