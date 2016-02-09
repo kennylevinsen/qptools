@@ -116,12 +116,16 @@ func confirm(s string) bool {
 }
 
 var cmds = map[string]func(root, cwd client.Fid, cmdline string) (client.Fid, error){
-	"ls":    ls,
-	"cd":    cd,
-	"cat":   cat,
-	"get":   get,
-	"put":   put,
-	"mkdir": mkdir,
+	"ls":     ls,
+	"cd":     cd,
+	"cat":    cat,
+	"get":    get,
+	"put":    put,
+	"mkdir":  mkdir,
+	"rm":     rm,
+	"hold":   hold,
+	"unhold": unhold,
+	"stuff":  stuff,
 }
 
 func ls(root, cwd client.Fid, cmdline string) (client.Fid, error) {
@@ -245,11 +249,86 @@ func cat(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 			break
 		}
 
+		off += uint64(len(b))
+
 		fmt.Printf("%s", b)
 	}
 
 	fmt.Fprintf(os.Stderr, "\n")
 	return cwd, nil
+}
+
+var heldFid client.Fid
+
+func hold(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	if heldFid != nil {
+		return cwd, errors.New("Already holding fid")
+	}
+	path, absolute := parsepath(cmdline)
+
+	f := cwd
+	if absolute {
+		f = root
+	}
+
+	var err error
+	f, _, err = f.Walk(path)
+	if err != nil {
+		return cwd, err
+	}
+	heldFid = f
+	fmt.Fprintf(os.Stderr, "Holding fid\n")
+	return cwd, nil
+}
+
+func unhold(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	if heldFid == nil {
+		return cwd, errors.New("No fid held")
+	}
+	heldFid.Clunk()
+	heldFid = nil
+	fmt.Fprintf(os.Stderr, "Releasing fid\n")
+	return cwd, nil
+}
+
+func stuff(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	args, err := parseCommandLine(cmdline)
+	if err != nil {
+		return cwd, err
+	}
+
+	cmd := kingpin.New("stuff", "")
+	content := cmd.Arg("content", "the string to stuff").Required().String()
+	target := cmd.Arg("target", "the file to stuff it into").Required().String()
+	_, err = cmd.Parse(args)
+	if err != nil {
+		return cwd, err
+	}
+
+	remotepath, absolute := parsepath(*target)
+	if len(remotepath) == 0 {
+		return cwd, errors.New("need a destination")
+	}
+
+	f := cwd
+	if absolute {
+		f = root
+	}
+	f, _, err = f.Walk(remotepath)
+	if err != nil {
+		return cwd, err
+	}
+	defer f.Clunk()
+
+	_, _, err = f.Open(qp.OWRITE)
+	if err != nil {
+		return cwd, err
+	}
+
+	wf := &client.WrappedFid{Fid: f}
+	err = wf.WriteAll([]byte(*content))
+
+	return cwd, err
 }
 
 func get(root, cwd client.Fid, cmdline string) (client.Fid, error) {
