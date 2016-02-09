@@ -41,6 +41,7 @@ func (h *BroadcastHandle) Seek(int64, int) (int64, error) {
 func (h *BroadcastHandle) Read(p []byte) (int, error) {
 	h.RLock()
 	if !h.Readable || h.f == nil {
+		h.RUnlock()
 		return 0, errors.New("file not open for reading")
 	}
 	h.RUnlock()
