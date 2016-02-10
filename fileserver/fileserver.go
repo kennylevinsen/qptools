@@ -371,28 +371,30 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 			}
 
 			d := root.(trees.Dir)
-			root, err = d.Walk(state.username, name)
-			if err != nil {
+			if root, err = d.Walk(state.username, name); err != nil {
 				if first {
 					return nil, nil, err
 				}
 				// The walk failed for some arbitrary reason.
 				goto done
-			}
-
-			root, err = root.Arrived(state.username)
-			if err != nil {
-				if first {
-					return nil, nil, err
-				}
-				// The walk failed for some arbitrary reason.
-				goto done
-			}
-
-			if root == nil {
+			} else if root == nil {
 				// The file did not exist
 				if first {
 					return nil, nil, errors.New(NoSuchFile)
+				}
+				goto done
+			}
+
+			if root, err = root.Arrived(state.username); err != nil {
+				if first {
+					return nil, nil, err
+				}
+				// The walk failed for some arbitrary reason.
+				goto done
+			} else if root == nil {
+				// Arrived returned a nil file.
+				if first {
+					return nil, nil errors.New(NoSuchFile)
 				}
 				goto done
 			}
