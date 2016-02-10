@@ -394,7 +394,7 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 			} else if root == nil {
 				// Arrived returned a nil file.
 				if first {
-					return nil, nil errors.New(NoSuchFile)
+					return nil, nil, errors.New(NoSuchFile)
 				}
 				goto done
 			}
