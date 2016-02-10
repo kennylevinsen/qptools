@@ -27,8 +27,8 @@ func (h *SyntheticHandle) Seek(offset int64, whence int) (int64, error) {
 	if (!h.Readable && !h.Writable) || h.f == nil {
 		return 0, errors.New("file not open")
 	}
-	h.f.RLock()
-	defer h.f.RUnlock()
+	h.f.Lock()
+	defer h.f.Unlock()
 
 	cnt := h.f.Content
 	length := int64(len(cnt))
@@ -64,8 +64,8 @@ func (h *SyntheticHandle) Read(p []byte) (int, error) {
 		return 0, errors.New("file not open for read")
 	}
 
-	h.f.RLock()
-	defer h.f.RUnlock()
+	h.f.Lock()
+	defer h.f.Unlock()
 
 	cnt := h.f.Content
 	maxRead := int64(len(p))
@@ -304,6 +304,15 @@ func (f *SyntheticFile) IsDir() (bool, error) {
 // CanRemove returns true. This cannot fail.
 func (f *SyntheticFile) CanRemove() (bool, error) {
 	return true, nil
+}
+
+// Arrived returns the file itself, after updating the access time.
+func (f *SyntheticFile) Arrived(user string) (File, error) {
+	// TODO(kl): Use atomic for atime access.
+	f.Lock()
+	defer f.Unlock()
+	f.Atime = time.Now()
+	return f, nil
 }
 
 // SetContent sets the content and length

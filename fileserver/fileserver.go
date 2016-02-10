@@ -380,6 +380,15 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 				goto done
 			}
 
+			root, err = root.Arrived(state.username)
+			if err != nil {
+				if first {
+					return nil, nil, err
+				}
+				// The walk failed for some arbitrary reason.
+				goto done
+			}
+
 			if root == nil {
 				// The file did not exist
 				if first {

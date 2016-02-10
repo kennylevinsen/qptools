@@ -8,11 +8,6 @@ import (
 	"github.com/joushou/qp"
 )
 
-// MagicWalk allows a file to override the returned file on walk.
-type MagicWalk interface {
-	MagicWalk(user string) (File, error)
-}
-
 // SyntheticDir represents an in-memory directory. Create on this directory
 // will add an in-memory SyntheticFile. It is capable of containing any item
 // implementing the File interface, in-memory or not. It supports basic
@@ -281,27 +276,26 @@ func (d *SyntheticDir) Remove(user, name string) error {
 
 func (d *SyntheticDir) Walk(user, name string) (File, error) {
 	d.Lock()
+	defer d.Unlock()
 	owner := d.UID == user
 	if !PermCheck(owner, false, d.Permissions, qp.OEXEC) {
-		d.Unlock()
 		return nil, errors.New("access denied")
 	}
 
 	d.Atime = time.Now()
 	x, exists := d.Tree[name]
 	if !exists {
-		d.Unlock()
 		return nil, nil
 	}
 
-	d.Unlock()
-
-	if o, ok := x.(MagicWalk); ok {
-		// MagicWalk might reenter this directory for whatever reason, so in
-		// order to avoid deadlock, we can't defer unlocking.
-		return o.MagicWalk(user)
-	}
 	return x, nil
+}
+
+func (d *SyntheticDir) Arrived(user string) (File, error) {
+	d.Lock()
+	defer d.Unlock()
+	d.Atime = time.Now()
+	return d, nil
 }
 
 func (d *SyntheticDir) IsDir() (bool, error) {

@@ -54,6 +54,13 @@ type File interface {
 	// CanRemove returns if the file can be removed. An example of a negative
 	// response would be a directory with content.
 	CanRemove() (bool, error)
+
+	// Arrived is called whenever a file is walked to, allowing access time to be
+	// updated. It returns a file and an error, permitting the walk to be
+	// "magic", with the file changing the walk destination. Unless a file
+	// intends to be magic, it should update its access time and return itself
+	// with a nil error.
+	Arrived(user string) (File, error)
 }
 
 // Dir is a file that also sports directory features. Directory detection must

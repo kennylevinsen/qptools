@@ -114,6 +114,11 @@ func (mt *MixDir) Walk(user, name string) (File, error) {
 	return nil, nil
 }
 
+// Arrived just returns the mixed tree.
+func (mt *MixDir) Arrived(_ string) (File, error) {
+	return mt, nil
+}
+
 // Create creates a file in Top.
 func (mt *MixDir) Create(user, name string, perms qp.FileMode) (File, error) {
 	return mt.Top.Create(user, name, perms)

@@ -240,6 +240,10 @@ func (pf *ProxyFile) Walk(_, name string) (File, error) {
 	}, nil
 }
 
+func (pf *ProxyFile) Arrived(_ string) (File, error) {
+	return pf, nil
+}
+
 func (pf *ProxyFile) Create(_, name string, perms qp.FileMode) (File, error) {
 	p := filepath.Join(pf.path, name)
 	if perms&qp.DMDIR != 0 {
