@@ -803,14 +803,14 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 		return
 	}
 
-	x, err := l.Open(state.username, r.Mode)
+	openfile, err := l.Open(state.username, r.Mode)
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return
 	}
 
 	state.location = append(state.location, l)
-	state.handle = x
+	state.handle = openfile
 	state.mode = r.Mode
 
 	fs.respond(r.Tag, &qp.CreateResponse{
