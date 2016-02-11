@@ -241,7 +241,7 @@ func (pf *ProxyFile) Walk(_, name string) (File, error) {
 }
 
 func (pf *ProxyFile) Arrived(_ string) (File, error) {
-	return pf, nil
+	return nil, nil
 }
 
 func (pf *ProxyFile) Create(_, name string, perms qp.FileMode) (File, error) {

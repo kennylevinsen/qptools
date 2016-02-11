@@ -116,7 +116,7 @@ func (mt *MixDir) Walk(user, name string) (File, error) {
 
 // Arrived just returns the mixed tree.
 func (mt *MixDir) Arrived(_ string) (File, error) {
-	return mt, nil
+	return nil, nil
 }
 
 // Create creates a file in Top.

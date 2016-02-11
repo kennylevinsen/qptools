@@ -312,7 +312,7 @@ func (f *SyntheticFile) Arrived(user string) (File, error) {
 	f.Lock()
 	defer f.Unlock()
 	f.Atime = time.Now()
-	return f, nil
+	return nil, nil
 }
 
 // SetContent sets the content and length

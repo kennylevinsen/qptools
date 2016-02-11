@@ -295,7 +295,7 @@ func (d *SyntheticDir) Arrived(user string) (File, error) {
 	d.Lock()
 	defer d.Unlock()
 	d.Atime = time.Now()
-	return d, nil
+	return nil, nil
 }
 
 func (d *SyntheticDir) IsDir() (bool, error) {
