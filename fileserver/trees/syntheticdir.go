@@ -205,7 +205,7 @@ func (d *SyntheticDir) Create(user, name string, perms qp.FileMode) (File, error
 	d.Mtime = time.Now()
 	d.Atime = d.Mtime
 	d.Version++
-	return d, nil
+	return f, nil
 }
 
 func (d *SyntheticDir) Add(name string, f File) error {
