@@ -116,6 +116,7 @@ func confirm(s string) bool {
 }
 
 var cmds = map[string]func(root, cwd client.Fid, cmdline string) (client.Fid, error){
+	"stat":   stat,
 	"ls":     ls,
 	"cd":     cd,
 	"cat":    cat,
@@ -126,6 +127,45 @@ var cmds = map[string]func(root, cwd client.Fid, cmdline string) (client.Fid, er
 	"hold":   hold,
 	"unhold": unhold,
 	"stuff":  stuff,
+}
+
+func stat(root, cwd client.Fid, cmdline string) (client.Fid, error) {
+	f := cwd
+	if cmdline != "" {
+		path, absolute := parsepath(cmdline)
+		if absolute {
+			f = root
+		}
+		var err error
+		f, _, err = f.Walk(path)
+		if err != nil {
+			return cwd, err
+		}
+		defer f.Clunk()
+	}
+
+	s, err := f.Stat()
+	if err != nil {
+		return cwd, err
+	}
+
+	fmt.Fprintf(os.Stderr, `
+Stat:
+	Type:        0x%X
+	Dev:         0x%X
+	Qid.Type:    0x%X
+	Qid.Version: %d
+	Qid.Path:    0x%X
+	Atime:       %d
+	Mtime:       %d
+	Length:      %d
+	Name:        %s
+	UID:         %s
+	GID:         %s
+	MUID:        %s
+`, s.Type, s.Dev, s.Qid.Type, s.Qid.Version, s.Qid.Path, s.Atime, s.Mtime, s.Length, s.Name, s.UID, s.GID, s.MUID)
+
+	return cwd, nil
 }
 
 func ls(root, cwd client.Fid, cmdline string) (client.Fid, error) {
