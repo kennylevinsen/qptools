@@ -157,11 +157,13 @@ func (fs *FileServer) cleanup() {
 	defer fs.fidLock.Unlock()
 
 	for _, s := range fs.fids {
+		s.Lock()
 		if s.handle != nil {
 			s.handle.Close()
 			s.handle = nil
 			s.mode = 0
 		}
+		s.Unlock()
 	}
 	fs.fids = make(map[qp.Fid]*fidState)
 }

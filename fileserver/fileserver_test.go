@@ -31,6 +31,7 @@ type debugRW struct {
 func (debugRW) Read([]byte) (int, error)       { return 0, io.EOF }
 func (d *debugRW) Write(p []byte) (int, error) { return d.buf.Write(p) }
 func (d *debugRW) NextMessage() (qp.Message, error) {
+
 	errchan := make(chan error, 0)
 	respchan := make(chan qp.Message, 0)
 
