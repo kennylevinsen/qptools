@@ -2,6 +2,7 @@ package fileserver
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"io"
 	"path/filepath"
@@ -24,13 +25,22 @@ const TestVerbosity = Quiet
 // FileServer, and making the Start loop terminate immediately with an I/O
 // error.
 type debugRW struct {
-	buf *bytes.Buffer
-	dec *qp.Decoder
+	buf     *bytes.Buffer
+	dec     *qp.Decoder
+	buflock sync.Mutex
 }
 
-func (debugRW) Read([]byte) (int, error)       { return 0, io.EOF }
-func (d *debugRW) Write(p []byte) (int, error) { return d.buf.Write(p) }
+func (*debugRW) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (d *debugRW) Write(p []byte) (int, error) {
+	d.buflock.Lock()
+	defer d.buflock.Unlock()
+	return d.buf.Write(p)
+}
+
 func (d *debugRW) NextMessage() (qp.Message, error) {
+	d.buflock.Lock()
+	defer d.buflock.Unlock()
 
 	errchan := make(chan error, 0)
 	respchan := make(chan qp.Message, 0)
@@ -103,7 +113,7 @@ func (f *fakeHandle) Authenticated(user, service string) (bool, error) {
 }
 
 type fakeFile struct {
-	trees.SyntheticDir
+	trees.SyntheticFile
 	opened   int
 	openLock sync.Mutex
 	rwLock   sync.RWMutex
@@ -264,7 +274,7 @@ func open(mode qp.OpenMode, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugRW
 
 	am, ok := m.(*qp.OpenResponse)
 	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.AttachResponse, got %#v", filepath.Base(file), line, m)
+		t.Fatalf("%s:%d: wrong response: expected a *qp.OpenResponse, got %#v", filepath.Base(file), line, m)
 	}
 
 	if am.Tag != tag {
@@ -315,7 +325,7 @@ func walk(names []string, newfid, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *d
 
 	am, ok := m.(*qp.WalkResponse)
 	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.AttachResponse, got %#v", filepath.Base(file), line, m)
+		t.Fatalf("%s:%d: wrong response: expected a *qp.WalkResponse, got %#v", filepath.Base(file), line, m)
 	}
 
 	if am.Tag != tag {
@@ -348,6 +358,144 @@ func walkfail(names []string, newfid, fid qp.Fid, tag qp.Tag, errstr string, fs 
 
 	if em.Error != errstr {
 		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
+	}
+}
+
+func read(offset uint64, count uint32, fid qp.Fid, tag qp.Tag, expected []byte, fs *FileServer, dbg *debugRW, t *testing.T) {
+	_, file, line, _ := runtime.Caller(1)
+	fs.read(&qp.ReadRequest{
+		Tag:    tag,
+		Fid:    fid,
+		Offset: offset,
+		Count:  count,
+	})
+
+	m, err := dbg.NextMessage()
+	if err != nil {
+		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+	}
+
+	am, ok := m.(*qp.ReadResponse)
+	if !ok {
+		t.Fatalf("%s:%d: wrong response: expected a *qp.ReadResponse, got %#v", filepath.Base(file), line, m)
+	}
+
+	if am.Tag != tag {
+		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
+	}
+
+	if bytes.Compare(am.Data, expected) != 0 {
+		t.Fatalf("%s:%d: response data incorrected:\nExpected: %s\nGot: %s\n", filepath.Base(file), line, hex.Dump(expected), hex.Dump(am.Data))
+	}
+}
+
+func readfail(offset uint64, count uint32, fid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugRW, t *testing.T) {
+	_, file, line, _ := runtime.Caller(1)
+	fs.read(&qp.ReadRequest{
+		Tag:    tag,
+		Fid:    fid,
+		Offset: offset,
+		Count:  count,
+	})
+
+	m, err := dbg.NextMessage()
+	if err != nil {
+		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+	}
+
+	em, ok := m.(*qp.ErrorResponse)
+	if !ok {
+		t.Fatalf("%s:%d: wrong response: expected a *qp.AttachResponse, got %#v", filepath.Base(file), line, m)
+	}
+
+	if em.Tag != tag {
+		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
+	}
+
+	if em.Error != errstr {
+		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
+	}
+}
+
+func write(offset uint64, payload []byte, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugRW, t *testing.T) {
+	_, file, line, _ := runtime.Caller(1)
+	fs.write(&qp.WriteRequest{
+		Tag:    tag,
+		Fid:    fid,
+		Offset: offset,
+		Data:   payload,
+	})
+
+	m, err := dbg.NextMessage()
+	if err != nil {
+		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+	}
+
+	am, ok := m.(*qp.WriteResponse)
+	if !ok {
+		t.Fatalf("%s:%d: wrong response: expected a *qp.ReadResponse, got %#v", filepath.Base(file), line, m)
+	}
+
+	if am.Tag != tag {
+		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
+	}
+
+	if am.Count != uint32(len(payload)) {
+		t.Fatalf("%s:%d: response data incorrected: expected %d, got %d", filepath.Base(file), line, len(payload), am.Count)
+	}
+}
+
+func writefail(offset uint64, payload []byte, fid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugRW, t *testing.T) {
+	_, file, line, _ := runtime.Caller(1)
+	fs.write(&qp.WriteRequest{
+		Tag:    tag,
+		Fid:    fid,
+		Offset: offset,
+		Data:   payload,
+	})
+
+	m, err := dbg.NextMessage()
+	if err != nil {
+		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+	}
+
+	em, ok := m.(*qp.ErrorResponse)
+	if !ok {
+		t.Fatalf("%s:%d: wrong response: expected a *qp.AttachResponse, got %#v", filepath.Base(file), line, m)
+	}
+
+	if em.Tag != tag {
+		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
+	}
+
+	if em.Error != errstr {
+		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
+	}
+}
+
+func stat(fid qp.Fid, tag qp.Tag, expected qp.Stat, fs *FileServer, dbg *debugRW, t *testing.T) {
+	_, file, line, _ := runtime.Caller(1)
+	fs.stat(&qp.StatRequest{
+		Tag: tag,
+		Fid: fid,
+	})
+
+	m, err := dbg.NextMessage()
+	if err != nil {
+		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+	}
+
+	am, ok := m.(*qp.StatResponse)
+	if !ok {
+		t.Fatalf("%s:%d: wrong response: expected a *qp.StatResponse, got %#v", filepath.Base(file), line, m)
+	}
+
+	if am.Tag != tag {
+		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
+	}
+
+	if am.Stat != expected {
+		t.Fatalf("%s:%d: response data incorrected:\nExpected: %#v\nGot: %#v\n", filepath.Base(file), line, expected, am.Stat)
 	}
 }
 
@@ -620,4 +768,80 @@ func TestAuth(t *testing.T) {
 	if ff.opened != 1 {
 		t.Errorf("open count for root file was %d, expected 1", ff.opened)
 	}
+}
+
+// TestRead tests if a file and directory can be successfully read.
+func TestRead(t *testing.T) {
+	dbg := newDebugRW()
+	root := trees.NewSyntheticDir("", 0777, "", "")
+	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
+	file1.SetContent([]byte("Some content"))
+	root.Add("file1", file1)
+	fs := New(dbg, root, nil)
+
+	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
+	attach(1, qp.NOFID, 1, fs, dbg, t)
+	walk([]string{"file1"}, 2, 1, 1, fs, dbg, t)
+	readfail(0, 1024, 2, 1, FidNotOpen, fs, dbg, t)
+
+	open(qp.OREAD, 2, 1, fs, dbg, t)
+	read(0, 1024, 2, 1, []byte("Some content"), fs, dbg, t)
+	read(5, 1024, 2, 1, []byte("content"), fs, dbg, t)
+	read(11, 1024, 2, 1, []byte("t"), fs, dbg, t)
+	read(12, 1024, 2, 1, nil, fs, dbg, t)
+	read(1024, 1024, 2, 1, nil, fs, dbg, t)
+
+	s1, _ := file1.Stat()
+	sb1, _ := s1.MarshalBinary()
+
+	walk(nil, 3, 1, 1, fs, dbg, t)
+	open(qp.OREAD, 3, 1, fs, dbg, t)
+	read(0, 1024, 3, 1, sb1, fs, dbg, t)
+	readfail(1, 1024, 3, 1, "seek to other than 0 on dir illegal", fs, dbg, t)
+}
+
+// TestWrite tests if a file can be succesfully written to.
+func TestWrite(t *testing.T) {
+	dbg := newDebugRW()
+	root := trees.NewSyntheticDir("", 0777, "", "")
+	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
+	root.Add("file1", file1)
+	fs := New(dbg, root, nil)
+
+	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
+	attach(1, qp.NOFID, 1, fs, dbg, t)
+	walk([]string{"file1"}, 2, 1, 1, fs, dbg, t)
+
+	writefail(0, []byte("Some content"), 2, 1, FidNotOpen, fs, dbg, t)
+	open(qp.OWRITE, 2, 1, fs, dbg, t)
+	write(0, []byte("Some"), 2, 1, fs, dbg, t)
+	write(4, []byte(" cont"), 2, 1, fs, dbg, t)
+	write(1024, []byte("ent"), 2, 1, fs, dbg, t)
+
+	if bytes.Compare(file1.Content, []byte("Some content")) != 0 {
+		t.Errorf("content did not match: expected %s, got %s", "Some content", file1.Content)
+	}
+
+	openfail(qp.OWRITE, 1, 1, OpenWriteOnDir, fs, dbg, t)
+}
+
+func TestStat(t *testing.T) {
+	dbg := newDebugRW()
+	root := trees.NewSyntheticDir("", 0777, "", "")
+	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
+	file1.SetContent([]byte("Some content"))
+	root.Add("file1", file1)
+	fs := New(dbg, root, nil)
+
+	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
+	attach(1, qp.NOFID, 1, fs, dbg, t)
+	walk([]string{"file1"}, 2, 1, 1, fs, dbg, t)
+
+	s1, _ := file1.Stat()
+	stat(2, 1, s1, fs, dbg, t)
+
+	walk(nil, 3, 1, 1, fs, dbg, t)
+
+	s2, _ := root.Stat()
+	stat(3, 1, s2, fs, dbg, t)
 }
