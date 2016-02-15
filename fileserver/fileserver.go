@@ -449,6 +449,7 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 		return
 	}
 
+	// BUG(kl): Race on msgsize, although useless.
 	fs.MessageSize = msgsize
 	fs.Encoder.MessageSize = msgsize
 	fs.Decoder.MessageSize = msgsize
@@ -884,9 +885,7 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 	}
 
 	n, err := handle.Read(b)
-	if err == io.EOF {
-		n = 0
-	} else if err != nil {
+	if err != nil && err != io.EOF {
 		fs.sendError(r.Tag, err.Error())
 		return
 	}
