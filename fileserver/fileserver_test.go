@@ -786,6 +786,7 @@ func TestRead(t *testing.T) {
 
 	open(qp.OREAD, 2, 1, fs, dbg, t)
 	read(0, 1024, 2, 1, []byte("Some content"), fs, dbg, t)
+	read(0, 0, 2, 1, nil, fs, dbg, t)
 	read(5, 1024, 2, 1, []byte("content"), fs, dbg, t)
 	read(11, 1024, 2, 1, []byte("t"), fs, dbg, t)
 	read(12, 1024, 2, 1, nil, fs, dbg, t)
@@ -825,6 +826,7 @@ func TestWrite(t *testing.T) {
 	openfail(qp.OWRITE, 1, 1, OpenWriteOnDir, fs, dbg, t)
 }
 
+// TestStat verifies that stat requests behave as expected.
 func TestStat(t *testing.T) {
 	dbg := newDebugRW()
 	root := trees.NewSyntheticDir("", 0777, "", "")
