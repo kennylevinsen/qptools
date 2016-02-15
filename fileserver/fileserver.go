@@ -39,6 +39,7 @@ const (
 	ResponseTooBig         = "response too big"
 	MessageSizeTooSmall    = "version: message size too small"
 	IncorrectTagForVersion = "version: tag must be NOTAG"
+	OpenWriteOnDir         = "open: cannot open dir for write"
 )
 
 var (
@@ -119,10 +120,10 @@ type FileServer struct {
 	Verbosity Verbosity
 
 	// DefaultRoot is the root to use if the service isn't in the Roots map.
-	DefaultRoot trees.Dir
+	DefaultRoot trees.File
 
 	// Roots is the map of services to roots to use.
-	Roots map[string]trees.Dir
+	Roots map[string]trees.File
 
 	// AuthFile is a special file used for auth. The handle of AuthFile must
 	// implement trees.Authenticator.
@@ -596,7 +597,7 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 		return
 	}
 
-	var root trees.Dir
+	var root trees.File
 	if x, exists := fs.Roots[r.Service]; exists {
 		root = x
 	} else {
@@ -721,6 +722,20 @@ func (fs *FileServer) open(r *qp.OpenRequest) {
 	if l == nil {
 		fs.sendError(r.Tag, InvalidOpOnFid)
 		return
+	}
+
+	isdir, err := l.IsDir()
+	if err != nil {
+		fs.sendError(r.Tag, err.Error())
+		return
+	}
+
+	if isdir {
+		switch r.Mode & 3 {
+		case qp.OWRITE, qp.ORDWR:
+			fs.sendError(r.Tag, OpenWriteOnDir)
+			return
+		}
 	}
 
 	qid, err := l.Qid()
@@ -1156,11 +1171,11 @@ func (fs *FileServer) Serve() error {
 	return fs.error
 }
 
-// New constructs a new FileServer. roots is the map where the fileserver
-// should look for directory roots based on service name. defaultRoot is the
-// root that will be used if the service wasn't in the map. If the service is
-// not in the map, and there is no default set, attach will fail.
-func New(rw io.ReadWriter, defaultRoot trees.Dir, roots map[string]trees.Dir) *FileServer {
+// New constructs a new FileServer. roots is the map where the fileserver should
+// look for file roots based on service name. defaultRoot is the root that will
+// be used if the service wasn't in the map. If the service is not in the map,
+// and there is no default set, attach will fail.
+func New(rw io.ReadWriter, defaultRoot trees.File, roots map[string]trees.File) *FileServer {
 	fs := &FileServer{
 		DefaultRoot: defaultRoot,
 		Roots:       roots,
