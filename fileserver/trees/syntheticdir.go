@@ -159,7 +159,7 @@ func (d *SyntheticDir) CanOpen(user string, mode qp.OpenMode) bool {
 	return PermCheck(owner, false, d.Permissions, mode)
 }
 
-func (d *SyntheticDir) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
+func (d *SyntheticDir) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error) {
 	if !d.CanOpen(user, mode) {
 		return nil, errors.New("access denied")
 	}

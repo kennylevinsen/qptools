@@ -14,50 +14,13 @@ type SyntheticHandle struct {
 	sync.Mutex
 	f          *SyntheticFile
 	User       string
-	Offset     int64
 	Readable   bool
 	Writable   bool
 	AppendOnly bool
 }
 
-// Seek changes the offset of the handle.
-func (h *SyntheticHandle) Seek(offset int64, whence int) (int64, error) {
-	h.Lock()
-	defer h.Unlock()
-	if (!h.Readable && !h.Writable) || h.f == nil {
-		return 0, errors.New("file not open")
-	}
-	h.f.Lock()
-	defer h.f.Unlock()
-
-	cnt := h.f.Content
-	length := int64(len(cnt))
-
-	switch whence {
-	case 0:
-	case 1:
-		offset = h.Offset + offset
-	case 2:
-		offset = length + offset
-	default:
-		return h.Offset, errors.New("invalid whence value")
-	}
-
-	if offset < 0 {
-		return h.Offset, errors.New("negative seek invalid")
-	}
-
-	if offset > length {
-		offset = length
-	}
-
-	h.Offset = offset
-	h.f.Atime = time.Now()
-	return h.Offset, nil
-}
-
-// Read reads from the current offset.
-func (h *SyntheticHandle) Read(p []byte) (int, error) {
+// ReadAt reads from the given offset.
+func (h *SyntheticHandle) ReadAt(p []byte, offset int64) (int, error) {
 	h.Lock()
 	defer h.Unlock()
 	if !h.Readable || h.f == nil {
@@ -66,22 +29,25 @@ func (h *SyntheticHandle) Read(p []byte) (int, error) {
 
 	h.f.Lock()
 	defer h.f.Unlock()
-
 	cnt := h.f.Content
+
+	if offset > int64(len(cnt)) {
+		return 0, nil
+	}
+
 	maxRead := int64(len(p))
-	remaining := int64(len(cnt)) - h.Offset
+	remaining := int64(len(cnt)) - offset
 	if maxRead > remaining {
 		maxRead = remaining
 	}
 
-	copy(p, cnt[h.Offset:maxRead+h.Offset])
-	h.Offset += maxRead
+	copy(p, cnt[offset:maxRead+offset])
 	h.f.Atime = time.Now()
 	return int(maxRead), nil
 }
 
-// Write writes at the current offset.
-func (h *SyntheticHandle) Write(p []byte) (int, error) {
+// WriteAt writes at the given offset.
+func (h *SyntheticHandle) WriteAt(p []byte, offset int64) (int, error) {
 	h.Lock()
 	defer h.Unlock()
 	if !h.Writable || h.f == nil {
@@ -93,10 +59,10 @@ func (h *SyntheticHandle) Write(p []byte) (int, error) {
 
 	cnt := h.f.Content
 	if h.AppendOnly {
-		h.Offset = int64(len(cnt))
+		offset = int64(len(cnt))
 	}
 	wlen := int64(len(p))
-	l := int(wlen + h.Offset)
+	l := int(wlen + offset)
 
 	if l > cap(cnt) {
 		c := l * 2
@@ -104,15 +70,14 @@ func (h *SyntheticHandle) Write(p []byte) (int, error) {
 			c = 10240
 		}
 		b := make([]byte, l, c)
-		copy(b, cnt[:h.Offset])
+		copy(b, cnt[:offset])
 		h.f.Content = b
 	} else if l > len(cnt) {
 		h.f.Content = cnt[:l]
 	}
 
-	copy(h.f.Content[h.Offset:], p)
+	copy(h.f.Content[offset:], p)
 
-	h.Offset += wlen
 	h.f.Mtime = time.Now()
 	h.f.Atime = h.f.Mtime
 	h.f.MUID = h.User
@@ -273,7 +238,7 @@ func (f *SyntheticFile) CanOpen(user string, mode qp.OpenMode) bool {
 }
 
 // Open returns a SyntheticHandle if the open was permitted.
-func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
+func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error) {
 	if !f.CanOpen(user, mode) {
 		return nil, errors.New("access denied")
 	}

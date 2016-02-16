@@ -9,13 +9,13 @@ import (
 
 // LockedHandle is a handle wrapper for use by LockedFile.
 type LockedHandle struct {
-	ReadWriteSeekCloser
+	ReadWriteAtCloser
 	Locker sync.Locker
 }
 
 // Close closes the wrapped handle, and unlocks the LockedFile.
 func (of *LockedHandle) Close() error {
-	err := of.ReadWriteSeekCloser.Close()
+	err := of.ReadWriteAtCloser.Close()
 	of.Locker.Unlock()
 	return err
 }
@@ -30,7 +30,7 @@ type LockedFile struct {
 
 // Open returns a LockedHandle if the open was permitted, holding either the
 // read or the write lock, depending on the opening mode.
-func (f *LockedFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
+func (f *LockedFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error) {
 	of, err := f.File.Open(user, mode)
 	if err != nil {
 		return of, err
@@ -51,8 +51,8 @@ func (f *LockedFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, e
 
 	l.Lock()
 	return &LockedHandle{
-		ReadWriteSeekCloser: of,
-		Locker:              l,
+		ReadWriteAtCloser: of,
+		Locker:            l,
 	}, nil
 }
 

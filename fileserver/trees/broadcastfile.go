@@ -30,15 +30,10 @@ type BroadcastHandle struct {
 	unwanted bool
 }
 
-// Seek is a noop on a BroadcastHandle.
-func (h *BroadcastHandle) Seek(int64, int) (int64, error) {
-	return 0, nil
-}
-
-// Read reads the current message, or if the end is reached, retrieves a new
+// ReadAt reads the current message, or if the end is reached, retrieves a new
 // message. If no new messages are available, Read blocks to wait for one. It
 // is woken up, returning ErrTerminatedRead if Close is called on the handle.
-func (h *BroadcastHandle) Read(p []byte) (int, error) {
+func (h *BroadcastHandle) ReadAt(p []byte, offset int64) (int, error) {
 	h.RLock()
 	if !h.Readable || h.f == nil {
 		h.RUnlock()
@@ -73,8 +68,8 @@ func (h *BroadcastHandle) Read(p []byte) (int, error) {
 	return m, nil
 }
 
-// Write adds a message to the BroadcastFile.
-func (h *BroadcastHandle) Write(p []byte) (int, error) {
+// WriteAt adds a message to the BroadcastFile.
+func (h *BroadcastHandle) WriteAt(p []byte, offset int64) (int, error) {
 	h.RLock()
 	defer h.RUnlock()
 	if !h.Writable || h.f == nil {
@@ -141,7 +136,7 @@ type BroadcastFile struct {
 // registered on the list of open files to receive broadcast messages. Do note
 // that BroadcastFile keeps a reference to all listening handles. A handle can
 // therefore only be garbage collected if Close has been called on it.
-func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
+func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error) {
 	if !f.CanOpen(user, mode) {
 		return nil, errors.New("access denied")
 	}

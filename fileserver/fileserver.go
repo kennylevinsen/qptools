@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"os"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -87,7 +86,7 @@ type fidState struct {
 
 	location FilePath
 
-	handle   trees.ReadWriteSeekCloser
+	handle   trees.ReadWriteAtCloser
 	mode     qp.OpenMode
 	username string
 }
@@ -878,13 +877,7 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 
 	b := make([]byte, count)
 
-	_, err := handle.Seek(int64(r.Offset), os.SEEK_SET)
-	if err != nil {
-		fs.sendError(r.Tag, err.Error())
-		return
-	}
-
-	n, err := handle.Read(b)
+	n, err := handle.ReadAt(b, int64(r.Offset))
 	if err != nil && err != io.EOF {
 		fs.sendError(r.Tag, err.Error())
 		return
@@ -931,13 +924,7 @@ func (fs *FileServer) write(r *qp.WriteRequest) {
 		return
 	}
 
-	_, err := handle.Seek(int64(r.Offset), os.SEEK_SET)
-	if err != nil {
-		fs.sendError(r.Tag, err.Error())
-		return
-	}
-
-	n, err := handle.Write(r.Data)
+	n, err := handle.WriteAt(r.Data, int64(r.Offset))
 	if err != nil {
 		fs.sendError(r.Tag, err.Error())
 		return

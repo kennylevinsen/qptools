@@ -197,7 +197,7 @@ func (pf *ProxyFile) List(_ string) ([]qp.Stat, error) {
 	return s, nil
 }
 
-func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error) {
+func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error) {
 	if err := pf.updateInfo(); err != nil {
 		return nil, err
 	}

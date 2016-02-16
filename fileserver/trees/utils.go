@@ -27,7 +27,7 @@ type File interface {
 
 	// Open returns a handle to the file in form of a ReadWriteSeekCloser in
 	// the mode requested if the user is permitted to do so.
-	Open(user string, mode qp.OpenMode) (ReadWriteSeekCloser, error)
+	Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error)
 
 	// Qid returns the qid of the file.
 	Qid() (qp.Qid, error)
@@ -86,18 +86,17 @@ type Dir interface {
 	Rename(user, oldname, newname string) error
 }
 
-// ReadWriteSeekCloser is an interface that allows reading, writing, seeking
-// and closing.
-type ReadWriteSeekCloser interface {
-	io.Reader
-	io.Writer
-	io.Seeker
+// ReadWriteAtCloser is an interface that allows reading and writing at offset,
+// as well as closing.
+type ReadWriteAtCloser interface {
+	io.ReaderAt
+	io.WriterAt
 	io.Closer
 }
 
 // Authenticator describes a handle that implements authentication service.
 type Authenticator interface {
-	ReadWriteSeekCloser
+	ReadWriteAtCloser
 
 	// Authenticated informs if the user is authenticated to the service.
 	Authenticated(user, service string) (bool, error)

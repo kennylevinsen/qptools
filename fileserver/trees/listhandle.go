@@ -1,15 +1,19 @@
 package trees
 
-import "errors"
+import (
+	"errors"
+	"sync"
+)
 
 // ListHandle is a special handle used to list directories that implement the
 // Lister interface. It also provides access logging for directories
 // implementing AccessLogger.
 type ListHandle struct {
+	sync.Mutex
+
 	Dir    Lister
 	User   string
 	buffer []byte
-	offset int64
 }
 
 func (h *ListHandle) update() error {
@@ -29,62 +33,38 @@ func (h *ListHandle) update() error {
 	return nil
 }
 
-// Seek seeks in the directory listing, but seeking to anything but the last
-// read location or to zero is considered an error. Seeking to zero updates
-// the directory listing.
-func (h *ListHandle) Seek(offset int64, whence int) (int64, error) {
+// ReadAt reads the directory listing.
+func (h *ListHandle) ReadAt(p []byte, offset int64) (int, error) {
+	h.Lock()
+	defer h.Unlock()
 	if h.Dir == nil {
 		return 0, errors.New("file not open")
 	}
-	length := int64(len(h.buffer))
-	switch whence {
-	case 0:
-	case 1:
-		offset = h.offset + offset
-	case 2:
-		offset = length + offset
-	default:
-		return h.offset, errors.New("invalid whence value")
-	}
 
-	if offset < 0 {
-		return h.offset, errors.New("negative seek invalid")
-	}
-
-	if offset != 0 && offset != h.offset {
-		return h.offset, errors.New("seek to other than 0 on dir illegal")
-	}
-
-	h.offset = offset
-	err := h.update()
-	if err != nil {
-		return 0, err
-	}
 	if a, ok := h.Dir.(AccessLogger); ok {
 		a.Accessed()
 	}
-	return h.offset, nil
-}
 
-// Read reads the directory listing.
-func (h *ListHandle) Read(p []byte) (int, error) {
-	if h.Dir == nil {
-		return 0, errors.New("file not open")
+	// TODO(kl): Enforce seek restrictions
+	if offset == 0 {
+		err := h.update()
+		if err != nil {
+			return 0, err
+		}
+	} else if offset > int64(len(h.buffer)) {
+		return 0, nil
 	}
+
 	rlen := int64(len(p))
-	if rlen > int64(len(h.buffer))-h.offset {
-		rlen = int64(len(h.buffer)) - h.offset
+	if rlen > int64(len(h.buffer))-offset {
+		rlen = int64(len(h.buffer)) - offset
 	}
-	copy(p, h.buffer[h.offset:rlen+h.offset])
-	h.offset += rlen
-	if a, ok := h.Dir.(AccessLogger); ok {
-		a.Accessed()
-	}
+	copy(p, h.buffer[offset:rlen+offset])
 	return int(rlen), nil
 }
 
-// Write returns an error, as writing to a directory is not legal.
-func (h *ListHandle) Write(p []byte) (int, error) {
+// WriteAt returns an error, as writing to a directory is not legal.
+func (h *ListHandle) WriteAt(p []byte, offset int64) (int, error) {
 	return 0, errors.New("cannot write to directory")
 }
 
