@@ -92,19 +92,15 @@ func (f *fakeHandle) Close() error {
 	return nil
 }
 
-func (f *fakeHandle) Read([]byte) (int, error) {
+func (f *fakeHandle) ReadAt([]byte, int64) (int, error) {
 	f.f.rwLock.RLock()
 	defer f.f.rwLock.RUnlock()
 	return 0, nil
 }
 
-func (f *fakeHandle) Write([]byte) (int, error) {
+func (f *fakeHandle) WriteAt([]byte, int64) (int, error) {
 	f.f.rwLock.RLock()
 	defer f.f.rwLock.RUnlock()
-	return 0, nil
-}
-
-func (f *fakeHandle) Seek(int64, int) (int64, error) {
 	return 0, nil
 }
 
@@ -120,7 +116,7 @@ type fakeFile struct {
 	authed   bool
 }
 
-func (f *fakeFile) Open(user string, mode qp.OpenMode) (trees.ReadWriteSeekCloser, error) {
+func (f *fakeFile) Open(user string, mode qp.OpenMode) (trees.ReadWriteAtCloser, error) {
 	f.openLock.Lock()
 	defer f.openLock.Unlock()
 
@@ -405,7 +401,7 @@ func readfail(offset uint64, count uint32, fid qp.Fid, tag qp.Tag, errstr string
 
 	em, ok := m.(*qp.ErrorResponse)
 	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.AttachResponse, got %#v", filepath.Base(file), line, m)
+		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
 	}
 
 	if em.Tag != tag {
@@ -433,7 +429,7 @@ func write(offset uint64, payload []byte, fid qp.Fid, tag qp.Tag, fs *FileServer
 
 	am, ok := m.(*qp.WriteResponse)
 	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.ReadResponse, got %#v", filepath.Base(file), line, m)
+		t.Fatalf("%s:%d: wrong response: expected a *qp.WriteResponse, got %#v", filepath.Base(file), line, m)
 	}
 
 	if am.Tag != tag {
@@ -461,7 +457,7 @@ func writefail(offset uint64, payload []byte, fid qp.Fid, tag qp.Tag, errstr str
 
 	em, ok := m.(*qp.ErrorResponse)
 	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.AttachResponse, got %#v", filepath.Base(file), line, m)
+		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
 	}
 
 	if em.Tag != tag {
@@ -798,7 +794,6 @@ func TestRead(t *testing.T) {
 	walk(nil, 3, 1, 1, fs, dbg, t)
 	open(qp.OREAD, 3, 1, fs, dbg, t)
 	read(0, 1024, 3, 1, sb1, fs, dbg, t)
-	readfail(1, 1024, 3, 1, "seek to other than 0 on dir illegal", fs, dbg, t)
 }
 
 // TestWrite tests if a file can be succesfully written to.
@@ -813,14 +808,16 @@ func TestWrite(t *testing.T) {
 	attach(1, qp.NOFID, 1, fs, dbg, t)
 	walk([]string{"file1"}, 2, 1, 1, fs, dbg, t)
 
-	writefail(0, []byte("Some content"), 2, 1, FidNotOpen, fs, dbg, t)
+	somecnt := []byte("Some content")
+
+	writefail(0, somecnt, 2, 1, FidNotOpen, fs, dbg, t)
 	open(qp.OWRITE, 2, 1, fs, dbg, t)
 	write(0, []byte("Some"), 2, 1, fs, dbg, t)
 	write(4, []byte(" cont"), 2, 1, fs, dbg, t)
 	write(1024, []byte("ent"), 2, 1, fs, dbg, t)
 
-	if bytes.Compare(file1.Content, []byte("Some content")) != 0 {
-		t.Errorf("content did not match: expected %s, got %s", "Some content", file1.Content)
+	if bytes.Compare(file1.Content, somecnt) != 0 {
+		t.Errorf("content did not match:\nExpected: %s\nGot: %s", hex.Dump(somecnt), hex.Dump(file1.Content))
 	}
 
 	openfail(qp.OWRITE, 1, 1, OpenWriteOnDir, fs, dbg, t)
