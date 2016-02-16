@@ -845,6 +845,12 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 
 	fs.logreq(r.Tag, r)
 
+	// We try to cap things to the negotiated maxsize.
+	count := int(fs.MessageSize) - qp.ReadOverhead
+	if count > int(r.Count) {
+		count = int(r.Count)
+	}
+
 	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
 	fs.fidLock.RUnlock()
@@ -867,12 +873,6 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 	if (mode&3 != qp.OREAD) && (mode&3 != qp.ORDWR) {
 		fs.sendError(r.Tag, NotOpenForRead)
 		return
-	}
-
-	// We try to cap things to the negotiated maxsize
-	count := int(fs.MessageSize) - qp.ReadOverhead
-	if count > int(r.Count) {
-		count = int(r.Count)
 	}
 
 	b := make([]byte, count)
