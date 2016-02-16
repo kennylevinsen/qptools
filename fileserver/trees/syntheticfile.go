@@ -58,7 +58,7 @@ func (h *SyntheticHandle) WriteAt(p []byte, offset int64) (int, error) {
 	defer h.f.Unlock()
 
 	cnt := h.f.Content
-	if h.AppendOnly {
+	if h.AppendOnly || offset > int64(len(cnt)) {
 		offset = int64(len(cnt))
 	}
 	wlen := int64(len(p))
@@ -249,7 +249,8 @@ func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, 
 	f.Opens++
 
 	if f.Content != nil && mode&qp.OTRUNC != 0 && mode&qp.OWRITE != 0 {
-		f.SetContent(nil)
+		f.Content = nil
+		f.Length = 0
 	}
 
 	return &SyntheticHandle{
@@ -282,6 +283,8 @@ func (f *SyntheticFile) Arrived(user string) (File, error) {
 
 // SetContent sets the content and length
 func (f *SyntheticFile) SetContent(cnt []byte) {
+	f.Lock()
+	defer f.Unlock()
 	f.Content = cnt
 	f.Length = uint64(len(cnt))
 }

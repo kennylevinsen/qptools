@@ -5,11 +5,14 @@ import (
 	"sync"
 )
 
+// BUG(kl): ListHandle.ReadAt permits arbitrary seeking in the directory
+// listing, which is out of spec.
+
 // ListHandle is a special handle used to list directories that implement the
 // Lister interface. It also provides access logging for directories
 // implementing AccessLogger.
 type ListHandle struct {
-	sync.Mutex
+	sync.RWMutex
 
 	Dir    Lister
 	User   string
@@ -35,8 +38,17 @@ func (h *ListHandle) update() error {
 
 // ReadAt reads the directory listing.
 func (h *ListHandle) ReadAt(p []byte, offset int64) (int, error) {
-	h.Lock()
-	defer h.Unlock()
+	if offset == 0 {
+		h.Lock()
+		err := h.update()
+		h.Unlock()
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	h.RLock()
+	defer h.RUnlock()
 	if h.Dir == nil {
 		return 0, errors.New("file not open")
 	}
@@ -45,13 +57,7 @@ func (h *ListHandle) ReadAt(p []byte, offset int64) (int, error) {
 		a.Accessed()
 	}
 
-	// TODO(kl): Enforce seek restrictions
-	if offset == 0 {
-		err := h.update()
-		if err != nil {
-			return 0, err
-		}
-	} else if offset > int64(len(h.buffer)) {
+	if offset > int64(len(h.buffer)) {
 		return 0, nil
 	}
 
