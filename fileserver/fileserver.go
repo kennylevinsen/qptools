@@ -308,14 +308,16 @@ func (fs *FileServer) flushTag(t qp.Tag) {
 // walkTo handles the walking logic. It is isolated to make implementation of
 // .e with its additional walk-performing requests simpler.
 func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
-	// We could theoretically release the state lock after copying the content,
-	// which might be saner due to Open or Walk on the files potentially
-	// blocking, but we are currently holding the lock during the full walk for
-	// simplicity.
+	// Walk and Arrived can block, so we don't want to be holding locks. Copy
+	// what we need.
 	state.Lock()
-	defer state.Unlock()
+	handle := state.handle
+	root := state.location.Current()
+	newloc := state.location.Clone()
+	username := state.username
+	state.Unlock()
 
-	if state.handle != nil {
+	if handle != nil {
 		// Can't walk on an open fid.
 		return nil, nil, errors.New(FidOpen)
 	}
@@ -324,18 +326,16 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 		// A 0-length walk is equivalent to walking to ".", which effectively
 		// just clones the fid.
 		x := &fidState{
-			username: state.username,
-			location: state.location,
+			username: username,
+			location: newloc,
 		}
 		return x, nil, nil
 	}
 
-	root := state.location.Current()
 	if root == nil {
 		return nil, nil, errors.New(InvalidOpOnFid)
 	}
 
-	newloc := state.location.Clone()
 	first := true
 	var isdir bool
 	var err error
@@ -349,7 +349,7 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 			// list.
 			addToLoc = false
 		case "..":
-			// This also always succeeds, and is either does nothing or shortens
+			// This also always succeeds, and it either does nothing or shortens
 			// our location list. We don't want anything added to the list
 			// regardless.
 			addToLoc = false
@@ -374,11 +374,11 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 			}
 
 			d := root.(trees.Dir)
-			if root, err = d.Walk(state.username, name); err != nil {
+			if root, err = d.Walk(username, name); err != nil {
+				// The walk failed for some arbitrary reason.
 				if first {
 					return nil, nil, err
 				}
-				// The walk failed for some arbitrary reason.
 				goto done
 			} else if root == nil {
 				// The file did not exist
@@ -389,11 +389,11 @@ func (fs *FileServer) walkTo(state *fidState, names []string) (*fidState, []qp.Q
 			}
 
 			var temproot trees.File
-			if temproot, err = root.Arrived(state.username); err != nil {
+			if temproot, err = root.Arrived(username); err != nil {
+				// The Arrived callback failed for some arbitrary reason.
 				if first {
 					return nil, nil, err
 				}
-				// The walk failed for some arbitrary reason.
 				goto done
 			}
 
@@ -422,7 +422,7 @@ done:
 	}
 
 	s := &fidState{
-		username: state.username,
+		username: username,
 		location: newloc,
 	}
 
