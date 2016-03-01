@@ -1,7 +1,6 @@
 package trees
 
 import (
-	"errors"
 	"sync"
 
 	"github.com/joushou/qp"
@@ -35,18 +34,14 @@ func (f *LockedFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, err
 	if err != nil {
 		return of, err
 	}
-	read := mode&3 == qp.OREAD || mode&3 == qp.OEXEC || mode&3 == qp.ORDWR
+
 	write := mode&3 == qp.OWRITE || mode&3 == qp.ORDWR
 
 	var l sync.Locker
-	switch {
-	case write:
-		l = f.OpenLock.RLocker()
-	case read:
+	if write {
 		l = &f.OpenLock
-	default:
-		of.Close()
-		return nil, errors.New("locked file can only be opened for read or write")
+	} else {
+		l = f.OpenLock.RLocker()
 	}
 
 	l.Lock()
