@@ -10,7 +10,10 @@ import (
 
 // ErrTerminatedRead indicates that a read was terminated because the file was
 // closed.
-var ErrTerminatedRead = errors.New("read terminated")
+var (
+	ErrTerminatedRead = errors.New("read terminated")
+	ErrMessageTooBig  = errors.New("message bigger than requested read")
+)
 
 // BroadcastHandle implements the R/W access to the broadcasting mechanism of
 // BroadcastFile.
@@ -18,63 +21,35 @@ type BroadcastHandle struct {
 	sync.RWMutex
 	f *BroadcastFile
 
-	Readable bool
-	Writable bool
+	consumer bool
 
 	queue     [][]byte
 	queueCond *sync.Cond
 
-	curbuf     []byte
-	curbufLock sync.RWMutex
-
 	unwanted bool
 }
 
-// ReadAt reads the current message, or if the end is reached, retrieves a new
-// message. If no new messages are available, Read blocks to wait for one. It
-// is woken up, returning ErrTerminatedRead if Close is called on the handle.
+// ReadAt retrieves a message. If no new messages are available, Read blocks to
+// wait for one. It is woken up, returning ErrTerminatedRead if Close is called
+// on the handle. If the message was bigger than the requested read size,
+// ErrMessageTooBig is returned.
 func (h *BroadcastHandle) ReadAt(p []byte, offset int64) (int, error) {
-	h.RLock()
-	if !h.Readable || h.f == nil {
-		h.RUnlock()
-		return 0, errors.New("file not open for reading")
-	}
-	h.RUnlock()
-
-	h.curbufLock.Lock()
-	defer h.curbufLock.Unlock()
-
-	if h.curbuf == nil {
-		// If we don't have a buffer, wait for one
-		var err error
-		h.curbuf, err = h.fetch()
-		if err != nil {
-			return 0, err
-		}
-	} else if len(h.curbuf) == 0 {
-		// If our buffer is empty, clear it - next read will fetch us a new one.
-		h.curbuf = nil
-		return 0, nil
+	buf, err := h.fetch()
+	if err != nil {
+		return 0, err
 	}
 
-	m := len(h.curbuf)
-	if len(p) < m {
-		m = len(p)
+	if len(p) < len(buf) {
+		return 0, ErrMessageTooBig
 	}
 
-	copy(p, h.curbuf[:m])
-	h.curbuf = h.curbuf[m:]
+	copy(p, buf)
 
-	return m, nil
+	return len(p), nil
 }
 
 // WriteAt adds a message to the BroadcastFile.
 func (h *BroadcastHandle) WriteAt(p []byte, offset int64) (int, error) {
-	h.RLock()
-	defer h.RUnlock()
-	if !h.Writable || h.f == nil {
-		return 0, errors.New("file not open for writing")
-	}
 	h.f.Push(p)
 	return len(p), nil
 }
@@ -108,17 +83,17 @@ func (h *BroadcastHandle) push(b []byte) {
 
 // Close closes the handle, waking up any blocked reads.
 func (h *BroadcastHandle) Close() error {
-	h.Lock()
-	defer h.Unlock()
+	h.queueCond.L.Lock()
+	defer h.queueCond.L.Unlock()
+
 	h.queue = nil
 	h.unwanted = true
 	h.queueCond.Broadcast()
 
-	if h.Readable && h.f != nil {
+	if h.consumer {
 		// Only readable files are registered
 		h.f.deregister(h)
 	}
-	h.f = nil
 	return nil
 }
 
@@ -138,7 +113,7 @@ type BroadcastFile struct {
 // therefore only be garbage collected if Close has been called on it.
 func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error) {
 	if !f.CanOpen(user, mode) {
-		return nil, errors.New("access denied")
+		return nil, ErrPermissionDenied
 	}
 
 	f.Lock()
@@ -146,13 +121,11 @@ func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, 
 	f.Atime = time.Now()
 
 	readable := mode&3 == qp.OREAD || mode&3 == qp.OEXEC || mode&3 == qp.ORDWR
-	writable := mode&3 == qp.OWRITE || mode&3 == qp.ORDWR
 
 	x := &BroadcastHandle{
 		f:         f,
+		consumer:  readable,
 		queueCond: sync.NewCond(&sync.Mutex{}),
-		Readable:  readable,
-		Writable:  writable,
 	}
 
 	if readable {
@@ -165,9 +138,6 @@ func (f *BroadcastFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, 
 
 // Push pushes a new broadcast message for all current listeners.
 func (f *BroadcastFile) Push(b []byte) error {
-	f.Lock()
-	f.Version++
-	f.Unlock()
 	f.RLock()
 	defer f.RUnlock()
 	for _, h := range f.files {
