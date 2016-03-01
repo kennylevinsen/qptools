@@ -1,10 +1,16 @@
 package trees
 
 import (
+	"errors"
 	"io"
 	"sync"
 
 	"github.com/joushou/qp"
+)
+
+// Common errors.
+var (
+	ErrPermissionDenied = errors.New("permission denied")
 )
 
 var (

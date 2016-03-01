@@ -128,9 +128,6 @@ type FileServer struct {
 	// implement trees.Authenticator.
 	AuthFile trees.File
 
-	// internal
-	error error
-
 	// It is important that the locks below are only held during the immediate
 	// manipulation of the maps they are associated with. That also includes
 	// the read locks. Holding it for the full duration of a potentially
@@ -139,9 +136,10 @@ type FileServer struct {
 	fidLock   sync.RWMutex
 	tagLock   sync.Mutex
 	errorLock sync.Mutex
-	errorCnt  uint32
 
-	// session data
+	// internal state
+	error       error
+	errorCnt    uint32
 	MessageSize uint32
 	fids        map[qp.Fid]*fidState
 	tags        map[qp.Tag]bool

@@ -65,7 +65,7 @@ func (d *SyntheticDir) SetName(user, name string) error {
 
 func (d *SyntheticDir) SetOwner(user, UID, GID string) error {
 	if !d.CanOpen(user, qp.OWRITE) {
-		return errors.New("permission denied")
+		return ErrPermissionDenied
 	}
 	d.Lock()
 	defer d.Unlock()
@@ -84,7 +84,7 @@ func (d *SyntheticDir) SetOwner(user, UID, GID string) error {
 
 func (d *SyntheticDir) SetMode(user string, mode qp.FileMode) error {
 	if user != d.UID || !d.CanOpen(user, qp.OWRITE) {
-		return errors.New("permission denied")
+		return ErrPermissionDenied
 	}
 	d.Lock()
 	defer d.Unlock()
@@ -138,7 +138,7 @@ func (d *SyntheticDir) List(user string) ([]qp.Stat, error) {
 	owner := d.UID == user
 
 	if !PermCheck(owner, false, d.Permissions, qp.OREAD) {
-		return nil, errors.New("access denied")
+		return nil, ErrPermissionDenied
 	}
 
 	var s []qp.Stat
@@ -161,7 +161,7 @@ func (d *SyntheticDir) CanOpen(user string, mode qp.OpenMode) bool {
 
 func (d *SyntheticDir) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error) {
 	if !d.CanOpen(user, mode) {
-		return nil, errors.New("access denied")
+		return nil, ErrPermissionDenied
 	}
 
 	d.Lock()
@@ -183,7 +183,7 @@ func (d *SyntheticDir) Create(user, name string, perms qp.FileMode) (File, error
 	defer d.Unlock()
 	owner := d.UID == user
 	if !PermCheck(owner, false, d.Permissions, qp.OWRITE) {
-		return nil, errors.New("access denied")
+		return nil, ErrPermissionDenied
 	}
 
 	_, ok := d.Tree[name]
@@ -235,7 +235,7 @@ func (d *SyntheticDir) Rename(user, oldname, newname string) error {
 	}
 
 	if !d.CanOpen(user, qp.OWRITE) {
-		return errors.New("permission denied")
+		return ErrPermissionDenied
 	}
 
 	elem := d.Tree[oldname]
@@ -252,7 +252,7 @@ func (d *SyntheticDir) Remove(user, name string) error {
 	defer d.Unlock()
 	owner := d.UID == user
 	if !PermCheck(owner, false, d.Permissions, qp.OWRITE) {
-		return errors.New("access denied")
+		return ErrPermissionDenied
 	}
 
 	f, exists := d.Tree[name]
@@ -279,7 +279,7 @@ func (d *SyntheticDir) Walk(user, name string) (File, error) {
 	defer d.Unlock()
 	owner := d.UID == user
 	if !PermCheck(owner, false, d.Permissions, qp.OEXEC) {
-		return nil, errors.New("access denied")
+		return nil, ErrPermissionDenied
 	}
 
 	d.Atime = time.Now()

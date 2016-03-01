@@ -47,16 +47,12 @@ func (h *ListHandle) ReadAt(p []byte, offset int64) (int, error) {
 		}
 	}
 
-	h.RLock()
-	defer h.RUnlock()
-	if h.Dir == nil {
-		return 0, errors.New("file not open")
-	}
-
 	if a, ok := h.Dir.(AccessLogger); ok {
 		a.Accessed()
 	}
 
+	h.RLock()
+	defer h.RUnlock()
 	if offset > int64(len(h.buffer)) {
 		return 0, nil
 	}
@@ -79,6 +75,5 @@ func (h *ListHandle) Close() error {
 	if a, ok := h.Dir.(AccessLogger); ok {
 		a.Closed()
 	}
-	h.Dir = nil
 	return nil
 }

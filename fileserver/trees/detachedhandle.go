@@ -1,9 +1,6 @@
 package trees
 
-import (
-	"errors"
-	"sync"
-)
+import "sync"
 
 // DetachedHandle is like SyntheticHandle, but instead of enquiring about
 // content from the file itself, DetachedHandle manipulates a local content
@@ -13,8 +10,6 @@ import (
 type DetachedHandle struct {
 	sync.RWMutex
 	Content    []byte
-	Readable   bool
-	Writable   bool
 	AppendOnly bool
 }
 
@@ -22,9 +17,6 @@ type DetachedHandle struct {
 func (h *DetachedHandle) ReadAt(p []byte, offset int64) (int, error) {
 	h.RLock()
 	defer h.RUnlock()
-	if !h.Readable {
-		return 0, errors.New("file not open for read")
-	}
 	if offset > int64(len(h.Content)) {
 		return 0, nil
 	}
@@ -43,10 +35,6 @@ func (h *DetachedHandle) ReadAt(p []byte, offset int64) (int, error) {
 func (h *DetachedHandle) WriteAt(p []byte, offset int64) (int, error) {
 	h.Lock()
 	defer h.Unlock()
-
-	if !h.Writable {
-		return 0, errors.New("file not open for write")
-	}
 
 	if h.AppendOnly || offset > int64(len(h.Content)) {
 		offset = int64(len(h.Content))
@@ -74,19 +62,13 @@ func (h *DetachedHandle) WriteAt(p []byte, offset int64) (int, error) {
 
 // Close closes the handle.
 func (h *DetachedHandle) Close() error {
-	h.Lock()
-	defer h.Unlock()
-	h.Readable = false
-	h.Writable = false
 	return nil
 }
 
 // NewDetachedHandle creates a new DetachedHandle.
-func NewDetachedHandle(cnt []byte, readable, writable, appendOnly bool) *DetachedHandle {
+func NewDetachedHandle(cnt []byte, appendOnly bool) *DetachedHandle {
 	return &DetachedHandle{
 		Content:    cnt,
-		Readable:   readable,
-		Writable:   writable,
 		AppendOnly: appendOnly,
 	}
 }

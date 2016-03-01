@@ -11,7 +11,6 @@ import (
 // SyntheticHandle implements locked R/W access to a SyntheticFile's internal
 // Content byteslice. It updates atime, mtime, version and open count.
 type SyntheticHandle struct {
-	sync.Mutex
 	f          *SyntheticFile
 	User       string
 	Readable   bool
@@ -21,12 +20,6 @@ type SyntheticHandle struct {
 
 // ReadAt reads from the given offset.
 func (h *SyntheticHandle) ReadAt(p []byte, offset int64) (int, error) {
-	h.Lock()
-	defer h.Unlock()
-	if !h.Readable || h.f == nil {
-		return 0, errors.New("file not open for read")
-	}
-
 	h.f.Lock()
 	defer h.f.Unlock()
 	cnt := h.f.Content
@@ -48,12 +41,6 @@ func (h *SyntheticHandle) ReadAt(p []byte, offset int64) (int, error) {
 
 // WriteAt writes at the given offset.
 func (h *SyntheticHandle) WriteAt(p []byte, offset int64) (int, error) {
-	h.Lock()
-	defer h.Unlock()
-	if !h.Writable || h.f == nil {
-		return 0, errors.New("file not open for write")
-	}
-
 	h.f.Lock()
 	defer h.f.Unlock()
 
@@ -88,12 +75,9 @@ func (h *SyntheticHandle) WriteAt(p []byte, offset int64) (int, error) {
 // Close closes the handle, decrementing the open counter of the
 // SyntheticFile.
 func (h *SyntheticHandle) Close() error {
-	h.Lock()
-	defer h.Unlock()
 	h.f.Lock()
 	defer h.f.Unlock()
 	h.f.Opens--
-	h.f = nil
 	return nil
 }
 
@@ -136,7 +120,7 @@ func (f *SyntheticFile) Qid() (qp.Qid, error) {
 // SetLength sets the length of the file content.
 func (f *SyntheticFile) SetLength(user string, length uint64) error {
 	if !f.CanOpen(user, qp.OWRITE) {
-		return errors.New("permission denied")
+		return ErrPermissionDenied
 	}
 	f.Lock()
 	defer f.Unlock()
@@ -169,7 +153,7 @@ func (f *SyntheticFile) SetName(user, name string) error {
 // SetOwner sets the owner.
 func (f *SyntheticFile) SetOwner(user, UID, GID string) error {
 	if !f.CanOpen(user, qp.OWRITE) {
-		return errors.New("permission denied")
+		return ErrPermissionDenied
 	}
 	f.Lock()
 	defer f.Unlock()
@@ -190,7 +174,7 @@ func (f *SyntheticFile) SetOwner(user, UID, GID string) error {
 // SetMode sets the mode and permissions.
 func (f *SyntheticFile) SetMode(user string, mode qp.FileMode) error {
 	if user != f.UID || !f.CanOpen(user, qp.OWRITE) {
-		return errors.New("permission denied")
+		return ErrPermissionDenied
 	}
 	f.Lock()
 	defer f.Unlock()
@@ -240,7 +224,7 @@ func (f *SyntheticFile) CanOpen(user string, mode qp.OpenMode) bool {
 // Open returns a SyntheticHandle if the open was permitted.
 func (f *SyntheticFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error) {
 	if !f.CanOpen(user, mode) {
-		return nil, errors.New("access denied")
+		return nil, ErrPermissionDenied
 	}
 
 	f.Lock()
