@@ -45,7 +45,7 @@ func (h *BroadcastHandle) ReadAt(p []byte, offset int64) (int, error) {
 
 	copy(p, buf)
 
-	return len(p), nil
+	return len(buf), nil
 }
 
 // WriteAt adds a message to the BroadcastFile.
