@@ -113,7 +113,6 @@ func (c *RawClient) received(m qp.Message) error {
 	defer c.queueLock.Unlock()
 	t := m.GetTag()
 	if ch, ok := c.queue[t]; ok {
-
 		ch <- m
 		close(ch)
 		delete(c.queue, t)
@@ -129,12 +128,19 @@ func (c *RawClient) Tag() (qp.Tag, error) {
 	defer c.queueLock.Unlock()
 
 	// No need to loop 0xFFFF times to figure out that the thing is full.
-	if len(c.queue) == 0x10000 {
-		return 0, ErrTagPoolDepleted
+	if len(c.queue) > 0xFFFF {
+		// No tags available.
+		return qp.NOTAG, ErrTagPoolDepleted
+	} else if len(c.queue) == 0xFFFF {
+		if _, exists := c.queue[qp.NOTAG]; !exists {
+			// The only tag available is qp.NOTAG.
+			return qp.NOTAG, ErrTagPoolDepleted
+		}
 	}
 
-	exists := true
+	// There is a tag available *somewhere*. Find it.
 	var t qp.Tag
+	exists := true
 	for i := 0; exists && i < 0xFFFF; i++ {
 		t = c.nextTag
 		c.nextTag++
@@ -143,11 +149,6 @@ func (c *RawClient) Tag() (qp.Tag, error) {
 		}
 
 		_, exists = c.queue[t]
-	}
-
-	// We can fail this check if the only valid tag was qp.NOTAG.
-	if exists {
-		return 0, ErrTagPoolDepleted
 	}
 
 	c.queue[t] = make(chan qp.Message, 1)
@@ -179,6 +180,8 @@ func (c *RawClient) Send(m qp.Message) (qp.Message, error) {
 }
 
 // Ditch throws a pending request state away, and unblocks any Send on the tag.
+// It does not send Tflush, and should only be used after such a message has
+// been sent, or after a connection has been deemed dead.
 func (c *RawClient) Ditch(t qp.Tag) error {
 	return c.killChannel(t)
 }
