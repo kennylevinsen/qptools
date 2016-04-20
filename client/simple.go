@@ -258,8 +258,8 @@ func (c *SimpleClient) Remove(name string) error {
 	if err != nil {
 		return err
 	}
-	defer fid.Remove()
-	return nil
+
+	return fid.Remove()
 }
 
 // Dial calls the provided address on the provided network, connecting to the
