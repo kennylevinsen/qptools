@@ -212,18 +212,21 @@ func ls(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 			isfile2 := stats[selectedstat].Mode&qp.DMDIR == 0
 
 			if isfile1 && !isfile2 {
-				// The previously selected file is a dir, and we got a file, so we lose.
+				// The previously selected file is a dir, and we got a file, so
+				// we lose.
 				continue
 			}
 
 			if !isfile1 && isfile2 {
-				// The previously selected file is a file, and we got a dir, so we win.
+				// The previously selected file is a file, and we got a dir, so
+				// we win.
 				selectedstat = i
 				continue
 			}
 
 			if stats[i].Name < stats[selectedstat].Name {
-				// We're both of the same type, but our name as lower value, so we win.
+				// We're both of the same type, but our name has lower value, so
+				// we win.
 				selectedstat = i
 				continue
 			}
@@ -250,10 +253,14 @@ func cd(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 	if absolute {
 		f = root
 	}
-	var err error
-	f, _, err = f.Walk(path)
+
+	f, qs, err := f.Walk(path)
 	if err != nil {
 		return cwd, err
+	}
+
+	if qs[len(qs)-1].Type != qp.QTDIR {
+		return cwd, errors.New("not a directory")
 	}
 
 	cwd.Clunk()
