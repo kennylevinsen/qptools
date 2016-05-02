@@ -42,6 +42,19 @@ func TestWalkTo(t *testing.T) {
 		location: FilePath{root},
 	}
 
+	f := &fidState{
+		username: "",
+		location: FilePath{file1},
+	}
+
+	h, _ := file1.Open("", qp.OREAD)
+
+	o := &fidState{
+		username: "",
+		location: FilePath{file1},
+		handle:   h,
+	}
+
 	// Go to file1
 	f1, q1, err := walkTo(s, []string{"file1"})
 	if err != nil {
@@ -168,7 +181,7 @@ func TestWalkTo(t *testing.T) {
 		t.Errorf("walk to dir1/dir3/file3 failed: %v", err)
 	}
 	if len(q11) != 1 {
-		t.Errorf("expected nil qids, got %v", q11)
+		t.Errorf("expected 1 qid, got %d", len(q10))
 	}
 	if f11 != nil {
 		t.Errorf("expected nil file, got %v", f11)
@@ -180,10 +193,34 @@ func TestWalkTo(t *testing.T) {
 		t.Errorf("walk to file1/file2/file3 failed: %v", err)
 	}
 	if len(q12) != 1 {
-		t.Errorf("expected nil qids, got %v", q12)
+		t.Errorf("expected 1 qid, got %d", len(q10))
 	}
 	if f12 != nil {
 		t.Errorf("expected nil file, got %v", f12)
+	}
+
+	// Fail due to non-directory root walk
+	f13, q13, err := walkTo(f, []string{"file1"})
+	if err == nil {
+		t.Errorf("walk to file1 succeeded, expected failure")
+	}
+	if q13 != nil {
+		t.Errorf("expected nil qids, got %v", q13)
+	}
+	if f13 != nil {
+		t.Errorf("expected nil file, got %v", f13)
+	}
+
+	// Fail due to open fid
+	f14, q14, err := walkTo(o, []string{"."})
+	if err == nil {
+		t.Errorf("walk to . succeeded, expected failure")
+	}
+	if q14 != nil {
+		t.Errorf("expected nil qids, got %v", q14)
+	}
+	if f14 != nil {
+		t.Errorf("expected nil file, got %v", f14)
 	}
 }
 
