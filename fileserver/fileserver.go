@@ -362,7 +362,7 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 	fs.Decoder.MessageSize = msgsize
 
 	// Modifying the Decoder protocol is safe, as the receiver loop is blocked.
-	// Modifying the encoder loop is safe as long as an older asynchronous
+	// Modifying the Encoder protocol is safe as long as an older asynchronous
 	// request is not having its response written at the current time.
 	fs.Encoder.Protocol = proto
 	fs.Decoder.Protocol = proto
