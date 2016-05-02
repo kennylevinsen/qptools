@@ -3,13 +3,9 @@ package fileserver
 import (
 	"bytes"
 	"encoding/hex"
-	"errors"
 	"io"
-	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/joushou/qp"
 	"github.com/joushou/qptools/fileserver/trees"
@@ -17,494 +13,191 @@ import (
 
 const TestVerbosity = Quiet
 
-//
-// Utility types
-//
+func TestWalkTo(t *testing.T) {
+	//
+	//	/
+	//		file1
+	// 		file2
+	//      ...
+	// 		dir1/
+	// 			dir2/
+	// 				file3
+	//
+	root := trees.NewSyntheticDir("", 0777, "", "")
+	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
+	root.Add("file1", file1)
+	file2 := trees.NewSyntheticFile("file2", 0777, "", "")
+	root.Add("file2", file2)
+	ddd := trees.NewSyntheticFile("...", 0777, "", "")
+	root.Add("...", ddd)
+	dir1 := trees.NewSyntheticDir("dir1", 0777, "", "")
+	root.Add("dir1", dir1)
+	dir2 := trees.NewSyntheticDir("dir2", 0777, "", "")
+	dir1.Add("dir2", dir2)
+	file3 := trees.NewSyntheticFile("file3", 0777, "", "")
+	dir2.Add("file3", file3)
 
-// debugRW stores writes and EOFs on reads. It is used to satisfy the
-// FileServer, and making the Start loop terminate immediately with an I/O
-// error.
-type debugRW struct {
-	buf     *bytes.Buffer
-	dec     *qp.Decoder
-	buflock sync.Mutex
-}
-
-func (*debugRW) Read([]byte) (int, error) { return 0, io.EOF }
-
-func (d *debugRW) Write(p []byte) (int, error) {
-	d.buflock.Lock()
-	defer d.buflock.Unlock()
-	return d.buf.Write(p)
-}
-
-func (d *debugRW) NextMessage() (qp.Message, error) {
-	d.buflock.Lock()
-	defer d.buflock.Unlock()
-
-	errchan := make(chan error, 0)
-	respchan := make(chan qp.Message, 0)
-
-	go func() {
-		resp, err := d.dec.NextMessage()
-		if err != nil {
-			errchan <- err
-		} else {
-			respchan <- resp
-		}
-	}()
-
-	select {
-	case <-time.After(5 * time.Second):
-		return nil, errors.New("message not received within timeout")
-	case err := <-errchan:
-		return nil, err
-	case resp := <-respchan:
-		return resp, nil
+	s := &fidState{
+		username: "",
+		location: FilePath{root},
 	}
-}
 
-func newDebugRW() *debugRW {
-	buf := new(bytes.Buffer)
-	return &debugRW{
-		buf: buf,
-		dec: &qp.Decoder{
-			Reader:      buf,
-			Protocol:    qp.NineP2000,
-			MessageSize: 16 * 1024,
-		},
-	}
-}
-
-// fakeHandle keeps track of opens, and takes locks on read and write to check
-// behaviour when blocking on I/O. It also also implements
-// trees.Authenticator, returning true if authed is set on the associated
-// fakeFile.
-type fakeHandle struct {
-	f *fakeFile
-}
-
-func (f *fakeHandle) Close() error {
-	f.f.openLock.Lock()
-	defer f.f.openLock.Unlock()
-
-	f.f.opened--
-	return nil
-}
-
-func (f *fakeHandle) ReadAt([]byte, int64) (int, error) {
-	f.f.rwLock.RLock()
-	defer f.f.rwLock.RUnlock()
-	return 0, nil
-}
-
-func (f *fakeHandle) WriteAt([]byte, int64) (int, error) {
-	f.f.rwLock.RLock()
-	defer f.f.rwLock.RUnlock()
-	return 0, nil
-}
-
-func (f *fakeHandle) Authenticated(user, service string) (bool, error) {
-	return f.f.authed, nil
-}
-
-type fakeFile struct {
-	trees.SyntheticFile
-	opened   int
-	openLock sync.Mutex
-	rwLock   sync.RWMutex
-	authed   bool
-}
-
-func (f *fakeFile) Open(user string, mode qp.OpenMode) (trees.ReadWriteAtCloser, error) {
-	f.openLock.Lock()
-	defer f.openLock.Unlock()
-
-	f.opened++
-	return &fakeHandle{
-		f: f,
-	}, nil
-}
-
-//
-// Standard operations reused by many tests
-//
-
-func version(version string, tag qp.Tag, msize int, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.version(&qp.VersionRequest{
-		Tag:         qp.NOTAG,
-		Version:     qp.Version,
-		MessageSize: 4096,
-	})
-
-	m, err := dbg.NextMessage()
+	// Go to file1
+	f1, q1, err := walkTo(s, []string{"file1"})
 	if err != nil {
-		t.Fatalf("%s:%d: version failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to file1 failed: %v", err)
+	}
+	if len(q1) != 1 {
+		t.Errorf("expected 1 qid, got %d", len(q1))
+	}
+	if f1.location.Current() != file1 {
+		t.Errorf("expected file1, got %v", f1)
 	}
 
-	vm, ok := m.(*qp.VersionResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.VersionResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if vm.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, vm.Tag)
-	}
-
-	if vm.Version != version {
-		t.Fatalf("%s:%d: version response string incorrect: expected %s, got %s", filepath.Base(file), line, version, qp.Version)
-	}
-}
-
-func auth(authfid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.auth(&qp.AuthRequest{
-		Tag:     tag,
-		AuthFid: authfid,
-	})
-
-	m, err := dbg.NextMessage()
+	// Go back up
+	f2, q2, err := walkTo(f1, []string{".."})
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to .. failed: %v", err)
+	}
+	if len(q2) != 1 {
+		t.Errorf("expected 1 qid, got %d", len(q2))
+	}
+	if f2.location.Current() != root {
+		t.Errorf("expected root, got %v", f2)
 	}
 
-	am, ok := m.(*qp.AuthResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.AuthResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if am.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
-	}
-}
-
-func authfail(authfid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.auth(&qp.AuthRequest{
-		Tag:     tag,
-		AuthFid: authfid,
-	})
-
-	m, err := dbg.NextMessage()
+	// Try to go up again
+	f3, q3, err := walkTo(s, []string{".."})
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to .. failed: %v", err)
+	}
+	if len(q3) != 1 {
+		t.Errorf("expected 1 qid, got %d", len(q3))
+	}
+	if f3.location.Current() != root {
+		t.Errorf("expected root, got %v", f3)
 	}
 
-	em, ok := m.(*qp.ErrorResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if em.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
-	}
-
-	if em.Error != errstr {
-		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
-	}
-}
-
-func attach(fid, authfid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.attach(&qp.AttachRequest{
-		Tag:     tag,
-		AuthFid: authfid,
-		Fid:     fid,
-	})
-
-	m, err := dbg.NextMessage()
+	// Go to ...
+	f4, q4, err := walkTo(s, []string{"..."})
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to ... failed: %v", err)
+	}
+	if len(q4) != 1 {
+		t.Errorf("expected 1 qid, got %d", len(q4))
+	}
+	if f4.location.Current() != ddd {
+		t.Errorf("expected ddd, got %v", f4)
 	}
 
-	am, ok := m.(*qp.AttachResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.AttachResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if am.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
-	}
-}
-
-func attachfail(fid, authfid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.attach(&qp.AttachRequest{
-		Tag:     tag,
-		AuthFid: authfid,
-		Fid:     fid,
-	})
-
-	m, err := dbg.NextMessage()
+	// Traverse multiple files
+	f5, q5, err := walkTo(s, []string{"dir1", "dir2", "file3"})
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to dir1/dir2/file3 failed: %v", err)
+	}
+	if len(q5) != 3 {
+		t.Errorf("expected 3 qid, got %d", len(q5))
+	}
+	if f5.location.Current() != file3 {
+		t.Errorf("expected file3, got %v", f5)
 	}
 
-	em, ok := m.(*qp.ErrorResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if em.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
-	}
-
-	if em.Error != errstr {
-		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
-	}
-}
-
-func open(mode qp.OpenMode, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.open(&qp.OpenRequest{
-		Tag:  tag,
-		Fid:  fid,
-		Mode: mode,
-	})
-
-	m, err := dbg.NextMessage()
+	// Go to .
+	f6, q6, err := walkTo(f1, []string{"."})
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to . failed: %v", err)
+	}
+	if len(q6) != 1 {
+		t.Errorf("expected 1 qid, got %d", len(q6))
+	}
+	if f6.location.Current() != file1 {
+		t.Errorf("expected file1, got %v", f6)
 	}
 
-	am, ok := m.(*qp.OpenResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.OpenResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if am.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
-	}
-}
-
-func openfail(mode qp.OpenMode, fid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.open(&qp.OpenRequest{
-		Tag:  tag,
-		Fid:  fid,
-		Mode: mode,
-	})
-
-	m, err := dbg.NextMessage()
+	// Complicated walk
+	f7, q7, err := walkTo(s, []string{"dir1", "dir2", "file3", "..", ".", "..", "..", "file1", "..", "file2"})
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to dir1/dir2/file3/.././../file1 failed: %v", err)
+	}
+	if len(q7) != 10 {
+		t.Errorf("expected 10 qid, got %d", len(q7))
+	}
+	if f7.location.Current() != file2 {
+		t.Errorf("expected file2, got %v", f7)
 	}
 
-	em, ok := m.(*qp.ErrorResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if em.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
-	}
-
-	if em.Error != errstr {
-		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
-	}
-}
-
-func walk(names []string, newfid, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.walk(&qp.WalkRequest{
-		Tag:    tag,
-		Fid:    fid,
-		NewFid: newfid,
-		Names:  names,
-	})
-
-	m, err := dbg.NextMessage()
+	// Partial walk
+	f8, q8, err := walkTo(s, []string{"dir1", "dir3"})
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to dir1/dir3 failed: %v", err)
+	}
+	if len(q8) != 1 {
+		t.Errorf("expected 1 qid, got %d", len(q8))
+	}
+	if f8 != nil {
+		t.Errorf("expected nil file, got %v", f8)
 	}
 
-	am, ok := m.(*qp.WalkResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.WalkResponse, got %#v", filepath.Base(file), line, m)
+	// Fail on first walk
+	f9, q9, err := walkTo(s, []string{"dir3", "dir3"})
+	if err == nil {
+		t.Errorf("walk to dir3/dir3 succeeded, expected failure")
+	}
+	if q9 != nil {
+		t.Errorf("expected nil qids, got %v", q9)
+	}
+	if f9 != nil {
+		t.Errorf("expected nil file, got %v", f9)
 	}
 
-	if am.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
-	}
-}
-
-func walkfail(names []string, newfid, fid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.walk(&qp.WalkRequest{
-		Tag:    tag,
-		Fid:    fid,
-		NewFid: newfid,
-		Names:  names,
-	})
-
-	m, err := dbg.NextMessage()
+	// nil walk
+	f10, q10, err := walkTo(s, nil)
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("nil walk failed: %v", err)
+	}
+	if len(q10) != 0 {
+		t.Errorf("expected 0 qid, got %d", len(q10))
+	}
+	if f10.location.Current() != root {
+		t.Errorf("expected root, got %v", f10)
 	}
 
-	em, ok := m.(*qp.ErrorResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if em.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
-	}
-
-	if em.Error != errstr {
-		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
-	}
-}
-
-func read(offset uint64, count uint32, fid qp.Fid, tag qp.Tag, expected []byte, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.read(&qp.ReadRequest{
-		Tag:    tag,
-		Fid:    fid,
-		Offset: offset,
-		Count:  count,
-	})
-
-	m, err := dbg.NextMessage()
+	// Fail on second walk
+	f11, q11, err := walkTo(s, []string{"dir1", "dir3", "file3"})
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to dir1/dir3/file3 failed: %v", err)
+	}
+	if len(q11) != 1 {
+		t.Errorf("expected nil qids, got %v", q11)
+	}
+	if f11 != nil {
+		t.Errorf("expected nil file, got %v", f11)
 	}
 
-	am, ok := m.(*qp.ReadResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.ReadResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if am.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
-	}
-
-	if bytes.Compare(am.Data, expected) != 0 {
-		t.Fatalf("%s:%d: response data incorrected:\nExpected: %s\nGot: %s\n", filepath.Base(file), line, hex.Dump(expected), hex.Dump(am.Data))
-	}
-}
-
-func readfail(offset uint64, count uint32, fid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.read(&qp.ReadRequest{
-		Tag:    tag,
-		Fid:    fid,
-		Offset: offset,
-		Count:  count,
-	})
-
-	m, err := dbg.NextMessage()
+	// Fail due to non-directory walk
+	f12, q12, err := walkTo(s, []string{"file1", "file2", "file3"})
 	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
+		t.Errorf("walk to file1/file2/file3 failed: %v", err)
 	}
-
-	em, ok := m.(*qp.ErrorResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
+	if len(q12) != 1 {
+		t.Errorf("expected nil qids, got %v", q12)
 	}
-
-	if em.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
-	}
-
-	if em.Error != errstr {
-		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
+	if f12 != nil {
+		t.Errorf("expected nil file, got %v", f12)
 	}
 }
-
-func write(offset uint64, payload []byte, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.write(&qp.WriteRequest{
-		Tag:    tag,
-		Fid:    fid,
-		Offset: offset,
-		Data:   payload,
-	})
-
-	m, err := dbg.NextMessage()
-	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
-	}
-
-	am, ok := m.(*qp.WriteResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.WriteResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if am.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
-	}
-
-	if am.Count != uint32(len(payload)) {
-		t.Fatalf("%s:%d: response data incorrected: expected %d, got %d", filepath.Base(file), line, len(payload), am.Count)
-	}
-}
-
-func writefail(offset uint64, payload []byte, fid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.write(&qp.WriteRequest{
-		Tag:    tag,
-		Fid:    fid,
-		Offset: offset,
-		Data:   payload,
-	})
-
-	m, err := dbg.NextMessage()
-	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
-	}
-
-	em, ok := m.(*qp.ErrorResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if em.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
-	}
-
-	if em.Error != errstr {
-		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
-	}
-}
-
-func stat(fid qp.Fid, tag qp.Tag, expected qp.Stat, fs *FileServer, dbg *debugRW, t *testing.T) {
-	_, file, line, _ := runtime.Caller(1)
-	fs.stat(&qp.StatRequest{
-		Tag: tag,
-		Fid: fid,
-	})
-
-	m, err := dbg.NextMessage()
-	if err != nil {
-		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
-	}
-
-	am, ok := m.(*qp.StatResponse)
-	if !ok {
-		t.Fatalf("%s:%d: wrong response: expected a *qp.StatResponse, got %#v", filepath.Base(file), line, m)
-	}
-
-	if am.Tag != tag {
-		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
-	}
-
-	if am.Stat != expected {
-		t.Fatalf("%s:%d: response data incorrected:\nExpected: %#v\nGot: %#v\n", filepath.Base(file), line, expected, am.Stat)
-	}
-}
-
-//
-// Tests
-//
 
 // TestUknownFid checks if unknown fids are denied.
 func TestUnknownFid(t *testing.T) {
-	dbg := newDebugRW()
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
 	ff := &fakeFile{}
-	fs := New(dbg, ff, nil)
+	fs := New(p2, ff, nil)
 	fs.Verbosity = TestVerbosity
+	go fs.Serve()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	openfail(qp.OREAD, 0, 1, UnknownFid, fs, dbg, t)
@@ -515,10 +208,15 @@ func TestUnknownFid(t *testing.T) {
 // TestUseOfNOFID checks if NOFID is denied as new fid. It may only be used to
 // represent that a field has not been set.
 func TestUseOfNOFID(t *testing.T) {
-	dbg := newDebugRW()
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
 	ff := &fakeFile{}
-	fs := New(dbg, ff, nil)
+	fs := New(p2, ff, nil)
 	fs.Verbosity = TestVerbosity
+	go fs.Serve()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	authfail(qp.NOFID, 1, InvalidFid, fs, dbg, t)
@@ -529,10 +227,15 @@ func TestUseOfNOFID(t *testing.T) {
 // TestClunkRemove tests if a file is closed on clunk or remove. It does not
 // test if remove actually removes the file.
 func TestClunkRemove(t *testing.T) {
-	dbg := newDebugRW()
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
 	ff := &fakeFile{}
-	fs := New(dbg, ff, nil)
+	fs := New(p2, ff, nil)
 	fs.Verbosity = TestVerbosity
+	go fs.Serve()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	attach(0, qp.NOFID, 1, fs, dbg, t)
@@ -542,7 +245,7 @@ func TestClunkRemove(t *testing.T) {
 		t.Errorf("open count was %d, expected 1", ff.opened)
 	}
 
-	fs.clunk(&qp.ClunkRequest{
+	dbg.WriteMessage(&qp.ClunkRequest{
 		Tag: 1,
 		Fid: 0,
 	})
@@ -559,7 +262,7 @@ func TestClunkRemove(t *testing.T) {
 		t.Errorf("open count was %d, expected 1", ff.opened)
 	}
 
-	fs.remove(&qp.RemoveRequest{
+	dbg.WriteMessage(&qp.RemoveRequest{
 		Tag: 1,
 		Fid: 0,
 	})
@@ -573,10 +276,17 @@ func TestClunkRemove(t *testing.T) {
 // TestCleanup tests that when I/O errors occur, all open files are properly
 // closed and cleaned up, even if blocked in read or write calls.
 func TestCleanup(t *testing.T) {
-	dbg := newDebugRW()
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
 	ff := &fakeFile{}
-	fs := New(dbg, ff, nil)
+	fs := New(p2, ff, nil)
 	fs.Verbosity = TestVerbosity
+	reschan := make(chan error, 0)
+
+	go func() { reschan <- fs.Serve() }()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	attach(0, qp.NOFID, 1, fs, dbg, t)
@@ -596,37 +306,36 @@ func TestCleanup(t *testing.T) {
 	// Issue a read that will block.
 	go func() {
 		wg1.Done()
-		fs.read(&qp.ReadRequest{
+		dbg.WriteMessage(&qp.ReadRequest{
 			Tag:    3,
 			Fid:    0,
 			Offset: 0,
 			Count:  1024,
 		})
-		dbg.NextMessage()
 		wg2.Done()
 	}()
 
 	// Issue a write that will block.
 	go func() {
 		wg1.Done()
-		fs.write(&qp.WriteRequest{
+		dbg.WriteMessage(&qp.WriteRequest{
 			Tag:    4,
 			Fid:    1,
 			Offset: 0,
 			Data:   []byte("Hello, world!"),
 		})
-		dbg.NextMessage()
 		wg2.Done()
 	}()
+	wg1.Wait()
 
 	if ff.opened != 2 {
 		t.Errorf("open count was %d, expected 2", ff.opened)
 	}
 
-	// Wait to ensure that the calls are being issued.
-	wg1.Wait()
-
-	err := fs.Serve()
+	// Close channel and wait for the serve loop to die.
+	p1.Close()
+	p2.Close()
+	err := <-reschan
 	if err != io.EOF {
 		t.Errorf("start error was %v, expected %v", err, io.EOF)
 	}
@@ -645,10 +354,15 @@ func TestCleanup(t *testing.T) {
 // files are properly closed and cleaned up, even if blocked in read or write
 // calls.
 func TestVersionCleanup(t *testing.T) {
-	dbg := newDebugRW()
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
 	ff := &fakeFile{}
-	fs := New(dbg, ff, nil)
+	fs := New(p2, ff, nil)
 	fs.Verbosity = TestVerbosity
+	go fs.Serve()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	attach(0, qp.NOFID, 1, fs, dbg, t)
@@ -668,26 +382,24 @@ func TestVersionCleanup(t *testing.T) {
 	// Issue a read that will block.
 	go func() {
 		wg1.Done()
-		fs.read(&qp.ReadRequest{
+		dbg.WriteMessage(&qp.ReadRequest{
 			Tag:    3,
 			Fid:    0,
 			Offset: 0,
 			Count:  1024,
 		})
-		dbg.NextMessage()
 		wg2.Done()
 	}()
 
 	// Issue a write that will block.
 	go func() {
 		wg1.Done()
-		fs.write(&qp.WriteRequest{
+		dbg.WriteMessage(&qp.WriteRequest{
 			Tag:    4,
 			Fid:    1,
 			Offset: 0,
 			Data:   []byte("Hello, world!"),
 		})
-		dbg.NextMessage()
 		wg2.Done()
 	}()
 
@@ -712,10 +424,15 @@ func TestVersionCleanup(t *testing.T) {
 
 // TestNoAuth tests if the authentication is declined when no authfile is present.
 func TestNoAuth(t *testing.T) {
-	dbg := newDebugRW()
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
 	ff := &fakeFile{}
-	fs := New(dbg, ff, nil)
+	fs := New(p2, ff, nil)
 	fs.Verbosity = TestVerbosity
+	go fs.Serve()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	authfail(0, qp.NOTAG, AuthNotSupported, fs, dbg, t)
@@ -723,12 +440,17 @@ func TestNoAuth(t *testing.T) {
 
 // TestAuth tests if the authentication file behaves properly.
 func TestAuth(t *testing.T) {
-	dbg := newDebugRW()
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
 	af := &fakeFile{}
 	ff := &fakeFile{}
-	fs := New(dbg, ff, nil)
+	fs := New(p2, ff, nil)
 	fs.Verbosity = TestVerbosity
 	fs.AuthFile = af
+	go fs.Serve()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	auth(0, qp.NOTAG, fs, dbg, t)
@@ -768,12 +490,19 @@ func TestAuth(t *testing.T) {
 
 // TestRead tests if a file and directory can be successfully read.
 func TestRead(t *testing.T) {
-	dbg := newDebugRW()
 	root := trees.NewSyntheticDir("", 0777, "", "")
 	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
 	file1.SetContent([]byte("Some content"))
 	root.Add("file1", file1)
-	fs := New(dbg, root, nil)
+
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
+	fs := New(p2, root, nil)
+	fs.Verbosity = TestVerbosity
+	go fs.Serve()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	attach(1, qp.NOFID, 1, fs, dbg, t)
@@ -798,11 +527,18 @@ func TestRead(t *testing.T) {
 
 // TestWrite tests if a file can be succesfully written to.
 func TestWrite(t *testing.T) {
-	dbg := newDebugRW()
 	root := trees.NewSyntheticDir("", 0777, "", "")
 	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
 	root.Add("file1", file1)
-	fs := New(dbg, root, nil)
+
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
+	fs := New(p2, root, nil)
+	fs.Verbosity = TestVerbosity
+	go fs.Serve()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	attach(1, qp.NOFID, 1, fs, dbg, t)
@@ -825,12 +561,19 @@ func TestWrite(t *testing.T) {
 
 // TestStat verifies that stat requests behave as expected.
 func TestStat(t *testing.T) {
-	dbg := newDebugRW()
 	root := trees.NewSyntheticDir("", 0777, "", "")
 	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
 	file1.SetContent([]byte("Some content"))
 	root.Add("file1", file1)
-	fs := New(dbg, root, nil)
+
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
+	fs := New(p2, root, nil)
+	fs.Verbosity = TestVerbosity
+	go fs.Serve()
 
 	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
 	attach(1, qp.NOFID, 1, fs, dbg, t)
