@@ -151,7 +151,8 @@ func (c *SimpleClient) Write(content []byte, file string) error {
 
 	sfid := &WrappedFid{Fid: fid}
 
-	return sfid.WriteAll(content)
+	_, err = sfid.WriteAt(content, 0)
+	return err
 }
 
 // List returns a list of qp.Stats for each file in the directory. It does not

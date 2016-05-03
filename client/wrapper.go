@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"io"
 	"sync/atomic"
 
 	"github.com/joushou/qp"
@@ -10,8 +11,8 @@ import (
 // WrappedFid provides implementations of various common I/O interfaces, using
 // ReadOnce/WriteOnce of the Fid interface.
 type WrappedFid struct {
-	Fid
 	offset int64
+	Fid
 }
 
 // Seek changes the current offset.
@@ -32,7 +33,7 @@ func (wf *WrappedFid) Seek(offset int64, whence int) (int64, error) {
 	return offset, nil
 }
 
-// Read reads to the provided slice from the current offset.
+// Read implements io.Reader.
 func (wf *WrappedFid) Read(p []byte) (int, error) {
 	cur := atomic.LoadInt64(&wf.offset)
 	n, err := wf.ReadAt(p, cur)
@@ -40,55 +41,38 @@ func (wf *WrappedFid) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// ReadAt reads to the provided byte slice from the specified offset,
-// splitting the read into multiple messages as needed.
+// ReadAt implements io.ReaderAt.
 func (wf *WrappedFid) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, errors.New("cannot read from negative offset")
 	}
-	o := uint64(off)
-	read := 0
-	toread := len(p)
-	for read < toread {
-		b, err := wf.Fid.ReadOnce(o, uint32(toread))
-		if err != nil {
-			return read, err
-		}
-		if len(b) == 0 {
-			break
-		}
-		copy(p[read:], b)
-		read += len(b)
-		o += uint64(len(b))
-	}
 
-	return read, nil
+	b, err := wf.Fid.ReadOnce(uint64(off), uint32(len(p)))
+	copy(p, b)
+	return len(b), err
 }
 
 // ReadAll reads the full content of a file, starting at offset 0.
 func (wf *WrappedFid) ReadAll() ([]byte, error) {
 	var (
-		p   []byte
-		b   []byte
-		o   uint64
-		err error
+		p, b []byte
+		o    uint64
+		err  error
 	)
+
 	for {
 		b, err = wf.Fid.ReadOnce(o, wf.Fid.MessageSize())
-		if err != nil {
-			return p, err
-		}
-		if len(b) == 0 {
+		if err != nil || len(b) == 0 {
 			break
 		}
 		p = append(p, b...)
 		o += uint64(len(b))
 	}
 
-	return p, nil
+	return p, err
 }
 
-// Write writes to the provided slice at the current offset.
+// Write implements io.Writer.
 func (wf *WrappedFid) Write(p []byte) (int, error) {
 	cur := atomic.LoadInt64(&wf.offset)
 	n, err := wf.WriteAt(p, cur)
@@ -96,46 +80,37 @@ func (wf *WrappedFid) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// WriteAt writes the provided byte slice to the specified offset, splitting
-// the write into multiple messages as needed.
+// WriteAt implements io.WriterAt.
 func (wf *WrappedFid) WriteAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, errors.New("cannot read from negative offset")
 	}
-	ms := wf.Fid.MessageSize() - qp.WriteOverhead
+
+	var (
+		ms  = wf.Fid.MessageSize() - qp.WriteOverhead
+		o   = uint64(off)
+		n   uint32
+		err error
+	)
+
 	if ms > uint32(len(p)) {
 		ms = uint32(len(p))
 	}
-	o := uint64(off)
+
 	for len(p) > 0 {
-		n, err := wf.Fid.WriteOnce(o, p[:ms])
+		n, err = wf.Fid.WriteOnce(o, p[:ms])
 		if err != nil {
-			return int(o) - int(off), err
+			break
+		}
+		if n == 0 {
+			err = io.ErrShortWrite
+			break
 		}
 		p = p[n:]
 		o += uint64(n)
 	}
 
-	return int(o) - int(off), nil
-}
-
-// WriteAll writes the entire slice to the file, starting at offset 0.
-func (wf *WrappedFid) WriteAll(p []byte) error {
-	ms := wf.Fid.MessageSize() - qp.WriteOverhead
-	if ms > uint32(len(p)) {
-		ms = uint32(len(p))
-	}
-	var o uint64
-	for len(p) > 0 {
-		n, err := wf.Fid.WriteOnce(o, p[:ms])
-		if err != nil {
-			return err
-		}
-		p = p[n:]
-		o += uint64(n)
-	}
-
-	return nil
+	return int(o) - int(off), err
 }
 
 // Close clunks the fid.

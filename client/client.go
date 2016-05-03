@@ -421,7 +421,8 @@ func (f *ClientFid) ReadOnce(offset uint64, count uint32) ([]byte, error) {
 	return rresp.Data, nil
 }
 
-// WriteOnce is the primitive API, and is directly equivalent to sending a Twrite.
+// WriteOnce is the primitive API, and is directly equivalent to sending a
+// Twrite.
 func (f *ClientFid) WriteOnce(offset uint64, data []byte) (uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {

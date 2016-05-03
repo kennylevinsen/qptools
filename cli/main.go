@@ -375,7 +375,7 @@ func stuff(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 	}
 
 	wf := &client.WrappedFid{Fid: f}
-	err = wf.WriteAll([]byte(*content))
+	_, err = wf.WriteAt([]byte(*content), 0)
 
 	return cwd, err
 }
@@ -487,7 +487,7 @@ func put(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 
 	wf := &client.WrappedFid{Fid: f}
 	fmt.Fprintf(os.Stderr, "Uploading: %s to %s [%dB]", *local, *remote, len(strs))
-	err = wf.WriteAll(strs)
+	_, err = wf.WriteAt(strs, 0)
 	if err != nil {
 		return cwd, err
 	}
