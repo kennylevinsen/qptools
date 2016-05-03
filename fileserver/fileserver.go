@@ -212,24 +212,23 @@ func (fs *FileServer) handlePanic() {
 // immediately after checking its existence. It marks the fileserver as broken
 // on error by setting fs.dead to the error, which must break the server loop.
 func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
-	// We cannot let go of the tag lock until the tag has been deleted if it
-	// existed. Otherwise, we risk that the tag gets flushed while we're sending
-	// the response, potentially sending an Rflush before we start sending the
-	// response, which would violate protocol.
+	// We cannot let go of the tag lock until the repsonse has been sent if
+	// applicable. Otherwise, we risk that the tag gets flushed between deciding
+	// that it is okay to send the response, and actually sending it.
+	fs.tagLock.Lock()
 
 	if t != qp.NOTAG {
-		fs.tagLock.Lock()
 		if _, tagPresent := fs.tags[t]; !tagPresent {
 			fs.tagLock.Unlock()
 			return
 		}
 		delete(fs.tags, t)
-		fs.tagLock.Unlock()
 	}
 
 	fs.logresp(t, m)
-
 	err := fs.Encoder.WriteMessage(m)
+	fs.tagLock.Unlock()
+
 	switch err {
 	case qp.ErrMessageTooBig:
 		errmsg := ResponseTooBig
