@@ -91,6 +91,15 @@ type fidState struct {
 	username string
 }
 
+// requestState stores data regarding this specific request.
+type requestState struct {
+	// tag must not be modified after construction of requestState.
+	tag qp.Tag
+
+	// cancelled most only be read or modified while holding FileServer.tagLock.
+	cancelled bool
+}
+
 // FileServer serves an io.ReadWriter, navigating the provided file tree.
 //
 // While intended to operate by the specs, FileServer breaks spec, sometimes
@@ -142,7 +151,7 @@ type FileServer struct {
 	errorCnt    uint32
 	MessageSize uint32
 	fids        map[qp.Fid]*fidState
-	tags        map[qp.Tag]bool
+	tags        map[qp.Tag]*requestState
 
 	// Codecs
 	Encoder *qp.Encoder
@@ -208,25 +217,47 @@ func (fs *FileServer) handlePanic() {
 	}
 }
 
+// register registers a request state to its tag as a pending request. If
+// cancelAndOverwrite is set to true, a collision is solved by cancelling the
+// old requestState and assigning a new one, then to return an error. Otherwise,
+// an error is just returned.
+func (fs *FileServer) register(rs *requestState, cancelAndOverwrite bool) error {
+	if rs.tag == qp.NOTAG {
+		return nil
+	}
+
+	fs.tagLock.Lock()
+	defer fs.tagLock.Unlock()
+	if oldRS, exists := fs.tags[rs.tag]; exists {
+		if cancelAndOverwrite {
+			oldRS.cancelled = true
+			fs.tags[rs.tag] = rs
+		}
+		return errors.New(TagInUse)
+	}
+
+	fs.tags[rs.tag] = rs
+	return nil
+}
+
 // respond sends a response if the tag is still queued. The tag is removed
 // immediately after checking its existence. It marks the fileserver as broken
 // on error by setting fs.dead to the error, which must break the server loop.
-func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
+func (fs *FileServer) respond(rs *requestState, m qp.Message) {
 	// We cannot let go of the tag lock until the repsonse has been sent if
 	// applicable. Otherwise, we risk that the tag gets flushed between deciding
 	// that it is okay to send the response, and actually sending it.
 	fs.tagLock.Lock()
 
-	if t != qp.NOTAG {
-		if _, tagPresent := fs.tags[t]; !tagPresent {
-			fs.tagLock.Unlock()
-			return
-		}
-		delete(fs.tags, t)
+	if rs.cancelled {
+		fs.tagLock.Unlock()
+		return
 	}
 
-	fs.logresp(t, m)
+	fs.logresp(rs.tag, m)
 	err := fs.Encoder.WriteMessage(m)
+	delete(fs.tags, rs.tag)
+
 	fs.tagLock.Unlock()
 
 	switch err {
@@ -261,7 +292,7 @@ func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
 			}
 		}
 
-		if err = fs.addTag(t); err != nil {
+		if err = fs.register(rs, false); err != nil {
 			// BUG(kl): If a WriteMessage fails in FileServer.respond with
 			// qp.ErrMessageTooBig, and the client breaks protocol, sending an
 			// additional request on the same tag, we risk not being able to
@@ -272,7 +303,7 @@ func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
 			// not particularly care.
 			return
 		}
-		fs.sendError(t, errmsg)
+		fs.sendError(rs, errmsg)
 		return
 	default:
 		fs.die(err)
@@ -281,38 +312,19 @@ func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
 	}
 }
 
-func (fs *FileServer) sendError(t qp.Tag, str string) {
+func (fs *FileServer) sendError(rs *requestState, str string) {
 	e := &qp.ErrorResponse{
-		Tag:   t,
+		Tag:   rs.tag,
 		Error: str,
 	}
-	fs.respond(t, e)
+	fs.respond(rs, e)
 }
 
-// addTag registers a tag as a pending request. Removing the tag prior to its
-// response being processed results in the response not being sent.
-func (fs *FileServer) addTag(t qp.Tag) error {
-	if t == qp.NOTAG {
-		return nil
-	}
-
-	fs.tagLock.Lock()
-	if _, exists := fs.tags[t]; exists {
-		fs.tagLock.Unlock()
-		return errors.New(TagInUse)
-	}
-
-	fs.tags[t] = true
-	fs.tagLock.Unlock()
-
-	return nil
-}
-
-func (fs *FileServer) version(r *qp.VersionRequest) {
+func (fs *FileServer) version(r *qp.VersionRequest, rs *requestState) {
 	defer fs.handlePanic()
 	if r.Tag != qp.NOTAG {
 		// Be compliant!
-		fs.sendError(r.Tag, IncorrectTagForVersion)
+		fs.sendError(rs, IncorrectTagForVersion)
 		return
 	}
 
@@ -322,7 +334,7 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 		msgsize = fs.MessageSize
 	} else if msgsize < MinSize {
 		// This makes no sense. Error out.
-		fs.sendError(r.Tag, MessageSizeTooSmall)
+		fs.sendError(rs, MessageSizeTooSmall)
 		return
 	}
 
@@ -343,7 +355,7 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 
 	// Reset everything.
 	fs.tagLock.Lock()
-	fs.tags = make(map[qp.Tag]bool)
+	fs.tags = make(map[qp.Tag]*requestState)
 	fs.tagLock.Unlock()
 	fs.cleanup()
 
@@ -361,22 +373,22 @@ func (fs *FileServer) version(r *qp.VersionRequest) {
 	fs.Encoder.Protocol = proto
 	fs.Decoder.Protocol = proto
 
-	fs.respond(r.Tag, &qp.VersionResponse{
+	fs.respond(rs, &qp.VersionResponse{
 		Tag:         r.Tag,
 		MessageSize: msgsize,
 		Version:     versionstr,
 	})
 }
 
-func (fs *FileServer) auth(r *qp.AuthRequest) {
+func (fs *FileServer) auth(r *qp.AuthRequest, rs *requestState) {
 	defer fs.handlePanic()
 	if r.AuthFid == qp.NOFID {
-		fs.sendError(r.Tag, InvalidFid)
+		fs.sendError(rs, InvalidFid)
 		return
 	}
 
 	if fs.AuthFile == nil {
-		fs.sendError(r.Tag, AuthNotSupported)
+		fs.sendError(rs, AuthNotSupported)
 		return
 	}
 
@@ -384,13 +396,13 @@ func (fs *FileServer) auth(r *qp.AuthRequest) {
 	defer fs.fidLock.Unlock()
 
 	if _, exists := fs.fids[r.AuthFid]; exists {
-		fs.sendError(r.Tag, FidInUse)
+		fs.sendError(rs, FidInUse)
 		return
 	}
 
 	handle, err := fs.AuthFile.Open(r.Username, qp.ORDWR)
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
@@ -407,16 +419,16 @@ func (fs *FileServer) auth(r *qp.AuthRequest) {
 		Type:    qp.QTAUTH,
 	}
 
-	fs.respond(r.Tag, &qp.AuthResponse{
+	fs.respond(rs, &qp.AuthResponse{
 		Tag:     r.Tag,
 		AuthQid: qid,
 	})
 }
 
-func (fs *FileServer) attach(r *qp.AttachRequest) {
+func (fs *FileServer) attach(r *qp.AttachRequest, rs *requestState) {
 	defer fs.handlePanic()
 	if r.Fid == qp.NOFID {
-		fs.sendError(r.Tag, InvalidFid)
+		fs.sendError(rs, InvalidFid)
 		return
 	}
 
@@ -424,7 +436,7 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 	defer fs.fidLock.Unlock()
 
 	if _, exists := fs.fids[r.Fid]; exists {
-		fs.sendError(r.Tag, FidInUse)
+		fs.sendError(rs, FidInUse)
 		return
 	}
 
@@ -433,38 +445,38 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 		// There's an authfile and an authfid - check it.
 		as, exists := fs.fids[r.AuthFid]
 		if !exists {
-			fs.sendError(r.Tag, UnknownFid)
+			fs.sendError(rs, UnknownFid)
 			return
 		}
 
 		if as.handle == nil {
-			fs.sendError(r.Tag, FidNotOpen)
+			fs.sendError(rs, FidNotOpen)
 			return
 		}
 
 		auther, ok := as.handle.(trees.Authenticator)
 		if !ok {
-			fs.sendError(r.Tag, AfidNotAuthFile)
+			fs.sendError(rs, AfidNotAuthFile)
 			return
 		}
 
 		authed, err := auther.Authenticated(r.Username, r.Service)
 		if err != nil {
-			fs.sendError(r.Tag, err.Error())
+			fs.sendError(rs, err.Error())
 			return
 		}
 
 		if !authed {
-			fs.sendError(r.Tag, PermissionDenied)
+			fs.sendError(rs, PermissionDenied)
 			return
 		}
 	case fs.AuthFile == nil && r.AuthFid != qp.NOFID:
 		// There's no authfile, but an authfid was provided.
-		fs.sendError(r.Tag, AuthNotSupported)
+		fs.sendError(rs, AuthNotSupported)
 		return
 	case fs.AuthFile != nil && r.AuthFid == qp.NOFID:
 		// There's an authfile, but no authfid was provided.
-		fs.sendError(r.Tag, AuthRequired)
+		fs.sendError(rs, AuthRequired)
 		return
 	}
 
@@ -476,7 +488,7 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 	}
 
 	if root == nil {
-		fs.sendError(r.Tag, NoSuchService)
+		fs.sendError(rs, NoSuchService)
 		return
 	}
 
@@ -489,22 +501,25 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 
 	qid, err := root.Qid()
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
-	fs.respond(r.Tag, &qp.AttachResponse{
+	fs.respond(rs, &qp.AttachResponse{
 		Tag: r.Tag,
 		Qid: qid,
 	})
 }
 
-func (fs *FileServer) flush(r *qp.FlushRequest) {
+func (fs *FileServer) flush(r *qp.FlushRequest, rs *requestState) {
 	defer fs.handlePanic()
 	fs.tagLock.Lock()
-	delete(fs.tags, r.OldTag)
+	if oldRS, exists := fs.tags[r.OldTag]; exists {
+		oldRS.cancelled = true
+		delete(fs.tags, r.OldTag)
+	}
 	fs.tagLock.Unlock()
-	fs.respond(r.Tag, &qp.FlushResponse{
+	fs.respond(rs, &qp.FlushResponse{
 		Tag: r.Tag,
 	})
 }
@@ -636,10 +651,10 @@ done:
 	return s, qids, nil
 }
 
-func (fs *FileServer) walk(r *qp.WalkRequest) {
+func (fs *FileServer) walk(r *qp.WalkRequest, rs *requestState) {
 	defer fs.handlePanic()
 	if r.NewFid == qp.NOFID {
-		fs.sendError(r.Tag, InvalidFid)
+		fs.sendError(rs, InvalidFid)
 		return
 	}
 
@@ -648,7 +663,7 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 	fs.fidLock.RUnlock()
 
 	if !exists {
-		fs.sendError(r.Tag, UnknownFid)
+		fs.sendError(rs, UnknownFid)
 		return
 	}
 
@@ -657,13 +672,13 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 	fs.fidLock.RUnlock()
 
 	if exists {
-		fs.sendError(r.Tag, FidInUse)
+		fs.sendError(rs, FidInUse)
 		return
 	}
 
 	newfidState, qids, err := walkTo(state, r.Names)
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
@@ -673,20 +688,20 @@ func (fs *FileServer) walk(r *qp.WalkRequest) {
 		fs.fidLock.Unlock()
 	}
 
-	fs.respond(r.Tag, &qp.WalkResponse{
+	fs.respond(rs, &qp.WalkResponse{
 		Tag:  r.Tag,
 		Qids: qids,
 	})
 }
 
-func (fs *FileServer) open(r *qp.OpenRequest) {
+func (fs *FileServer) open(r *qp.OpenRequest, rs *requestState) {
 	defer fs.handlePanic()
 	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
 	fs.fidLock.RUnlock()
 
 	if !exists {
-		fs.sendError(r.Tag, UnknownFid)
+		fs.sendError(rs, UnknownFid)
 		return
 	}
 
@@ -694,58 +709,58 @@ func (fs *FileServer) open(r *qp.OpenRequest) {
 	defer state.Unlock()
 
 	if state.handle != nil {
-		fs.sendError(r.Tag, FidOpen)
+		fs.sendError(rs, FidOpen)
 		return
 	}
 
 	l := state.location.Current()
 	if l == nil {
-		fs.sendError(r.Tag, InvalidOpOnFid)
+		fs.sendError(rs, InvalidOpOnFid)
 		return
 	}
 
 	isdir, err := l.IsDir()
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
 	if isdir {
 		switch r.Mode & 3 {
 		case qp.OWRITE, qp.ORDWR:
-			fs.sendError(r.Tag, OpenWriteOnDir)
+			fs.sendError(rs, OpenWriteOnDir)
 			return
 		}
 	}
 
 	qid, err := l.Qid()
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
 	openfile, err := l.Open(state.username, r.Mode)
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
 	state.handle = openfile
 	state.mode = r.Mode
-	fs.respond(r.Tag, &qp.OpenResponse{
+	fs.respond(rs, &qp.OpenResponse{
 		Tag: r.Tag,
 		Qid: qid,
 	})
 }
 
-func (fs *FileServer) create(r *qp.CreateRequest) {
+func (fs *FileServer) create(r *qp.CreateRequest, rs *requestState) {
 	defer fs.handlePanic()
 	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
 	fs.fidLock.RUnlock()
 
 	if !exists {
-		fs.sendError(r.Tag, UnknownFid)
+		fs.sendError(rs, UnknownFid)
 		return
 	}
 
@@ -753,28 +768,28 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 	defer state.Unlock()
 
 	if state.handle != nil {
-		fs.sendError(r.Tag, FidOpen)
+		fs.sendError(rs, FidOpen)
 		return
 	}
 
 	if r.Name == "." || r.Name == ".." {
-		fs.sendError(r.Tag, InvalidFileName)
+		fs.sendError(rs, InvalidFileName)
 		return
 	}
 
 	cur := state.location.Current()
 	if cur == nil {
-		fs.sendError(r.Tag, InvalidOpOnFid)
+		fs.sendError(rs, InvalidOpOnFid)
 		return
 	}
 
 	isdir, err := cur.IsDir()
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 	if !isdir {
-		fs.sendError(r.Tag, FidNotDirectory)
+		fs.sendError(rs, FidNotDirectory)
 		return
 	}
 
@@ -782,19 +797,19 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 
 	l, err := dir.Create(state.username, r.Name, r.Permissions)
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
 	qid, err := l.Qid()
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
 	openfile, err := l.Open(state.username, r.Mode)
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
@@ -802,21 +817,20 @@ func (fs *FileServer) create(r *qp.CreateRequest) {
 	state.handle = openfile
 	state.mode = r.Mode
 
-	fs.respond(r.Tag, &qp.CreateResponse{
+	fs.respond(rs, &qp.CreateResponse{
 		Tag:    r.Tag,
 		Qid:    qid,
 		IOUnit: 0,
 	})
 }
 
-func (fs *FileServer) read(r *qp.ReadRequest) {
+func (fs *FileServer) read(r *qp.ReadRequest, rs *requestState) {
 	defer fs.handlePanic()
 	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
 	fs.fidLock.RUnlock()
-
 	if !exists {
-		fs.sendError(r.Tag, UnknownFid)
+		fs.sendError(rs, UnknownFid)
 		return
 	}
 
@@ -826,12 +840,12 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 	state.RUnlock()
 
 	if handle == nil {
-		fs.sendError(r.Tag, FidNotOpen)
+		fs.sendError(rs, FidNotOpen)
 		return
 	}
 
 	if (mode&3 != qp.OREAD) && (mode&3 != qp.ORDWR) {
-		fs.sendError(r.Tag, NotOpenForRead)
+		fs.sendError(rs, NotOpenForRead)
 		return
 	}
 
@@ -844,24 +858,24 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 	b := make([]byte, count)
 	n, err := handle.ReadAt(b, int64(r.Offset))
 	if err != nil && err != io.EOF {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
-	fs.respond(r.Tag, &qp.ReadResponse{
+	fs.respond(rs, &qp.ReadResponse{
 		Tag:  r.Tag,
 		Data: b[:n],
 	})
 }
 
-func (fs *FileServer) write(r *qp.WriteRequest) {
+func (fs *FileServer) write(r *qp.WriteRequest, rs *requestState) {
 	defer fs.handlePanic()
 	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
 	fs.fidLock.RUnlock()
 
 	if !exists {
-		fs.sendError(r.Tag, UnknownFid)
+		fs.sendError(rs, UnknownFid)
 		return
 	}
 
@@ -871,35 +885,35 @@ func (fs *FileServer) write(r *qp.WriteRequest) {
 	state.RUnlock()
 
 	if handle == nil {
-		fs.sendError(r.Tag, FidNotOpen)
+		fs.sendError(rs, FidNotOpen)
 		return
 	}
 
 	if (mode&3 != qp.OWRITE) && (mode&3 != qp.ORDWR) {
-		fs.sendError(r.Tag, NotOpenForWrite)
+		fs.sendError(rs, NotOpenForWrite)
 		return
 	}
 
 	n, err := handle.WriteAt(r.Data, int64(r.Offset))
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
-	fs.respond(r.Tag, &qp.WriteResponse{
+	fs.respond(rs, &qp.WriteResponse{
 		Tag:   r.Tag,
 		Count: uint32(n),
 	})
 }
 
-func (fs *FileServer) clunk(r *qp.ClunkRequest) {
+func (fs *FileServer) clunk(r *qp.ClunkRequest, rs *requestState) {
 	defer fs.handlePanic()
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 
 	state, exists := fs.fids[r.Fid]
 	if !exists {
-		fs.sendError(r.Tag, UnknownFid)
+		fs.sendError(rs, UnknownFid)
 		return
 	}
 
@@ -913,19 +927,19 @@ func (fs *FileServer) clunk(r *qp.ClunkRequest) {
 		state.handle = nil
 	}
 
-	fs.respond(r.Tag, &qp.ClunkResponse{
+	fs.respond(rs, &qp.ClunkResponse{
 		Tag: r.Tag,
 	})
 }
 
-func (fs *FileServer) remove(r *qp.RemoveRequest) {
+func (fs *FileServer) remove(r *qp.RemoveRequest, rs *requestState) {
 	defer fs.handlePanic()
 	fs.fidLock.Lock()
 	defer fs.fidLock.Unlock()
 
 	state, exists := fs.fids[r.Fid]
 	if !exists {
-		fs.sendError(r.Tag, UnknownFid)
+		fs.sendError(rs, UnknownFid)
 		return
 	}
 
@@ -940,7 +954,7 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 	}
 
 	if len(state.location) <= 1 {
-		fs.respond(r.Tag, &qp.RemoveResponse{
+		fs.respond(rs, &qp.RemoveResponse{
 			Tag: r.Tag,
 		})
 		return
@@ -950,25 +964,25 @@ func (fs *FileServer) remove(r *qp.RemoveRequest) {
 	p := state.location.Parent()
 	n, err := cur.Name()
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
 	p.(trees.Dir).Remove(state.username, n)
 
-	fs.respond(r.Tag, &qp.RemoveResponse{
+	fs.respond(rs, &qp.RemoveResponse{
 		Tag: r.Tag,
 	})
 }
 
-func (fs *FileServer) stat(r *qp.StatRequest) {
+func (fs *FileServer) stat(r *qp.StatRequest, rs *requestState) {
 	defer fs.handlePanic()
 	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
 	fs.fidLock.RUnlock()
 
 	if !exists {
-		fs.sendError(r.Tag, UnknownFid)
+		fs.sendError(rs, UnknownFid)
 		return
 	}
 
@@ -977,30 +991,30 @@ func (fs *FileServer) stat(r *qp.StatRequest) {
 	state.RUnlock()
 
 	if l == nil {
-		fs.sendError(r.Tag, InvalidOpOnFid)
+		fs.sendError(rs, InvalidOpOnFid)
 		return
 	}
 
 	st, err := l.Stat()
 	if err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
-	fs.respond(r.Tag, &qp.StatResponse{
+	fs.respond(rs, &qp.StatResponse{
 		Tag:  r.Tag,
 		Stat: st,
 	})
 }
 
-func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
+func (fs *FileServer) writeStat(r *qp.WriteStatRequest, rs *requestState) {
 	defer fs.handlePanic()
 	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
 	fs.fidLock.RUnlock()
 
 	if !exists {
-		fs.sendError(r.Tag, UnknownFid)
+		fs.sendError(rs, UnknownFid)
 		return
 	}
 
@@ -1009,7 +1023,7 @@ func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 
 	l := state.location.Current()
 	if l == nil {
-		fs.sendError(r.Tag, InvalidOpOnFid)
+		fs.sendError(rs, InvalidOpOnFid)
 		return
 	}
 
@@ -1019,53 +1033,54 @@ func (fs *FileServer) writeStat(r *qp.WriteStatRequest) {
 	}
 
 	if err := setStat(state.username, l, p, r.Stat); err != nil {
-		fs.sendError(r.Tag, err.Error())
+		fs.sendError(rs, err.Error())
 		return
 	}
 
-	fs.respond(r.Tag, &qp.WriteStatResponse{
+	fs.respond(rs, &qp.WriteStatResponse{
 		Tag: r.Tag,
 	})
 }
 
 func (fs *FileServer) received(m qp.Message) error {
 	t := m.GetTag()
-	if err := fs.addTag(t); err != nil {
-		fs.sendError(t, TagInUse)
+	fs.logreq(t, m)
+	rs := &requestState{tag: t}
+	if err := fs.register(rs, true); err != nil {
+		fs.sendError(rs, err.Error())
 		return nil
 	}
-	fs.logreq(t, m)
 
 	switch mx := m.(type) {
 	// Basic messages
 	case *qp.VersionRequest:
-		fs.version(mx)
+		fs.version(mx, rs)
 	case *qp.AuthRequest:
-		fs.auth(mx)
+		fs.auth(mx, rs)
 	case *qp.AttachRequest:
-		fs.attach(mx)
+		fs.attach(mx, rs)
 	case *qp.FlushRequest:
-		fs.flush(mx)
+		fs.flush(mx, rs)
 	case *qp.WalkRequest:
-		go fs.walk(mx)
+		go fs.walk(mx, rs)
 	case *qp.OpenRequest:
-		go fs.open(mx)
+		go fs.open(mx, rs)
 	case *qp.CreateRequest:
-		go fs.create(mx)
+		go fs.create(mx, rs)
 	case *qp.ReadRequest:
-		go fs.read(mx)
+		go fs.read(mx, rs)
 	case *qp.WriteRequest:
-		go fs.write(mx)
+		go fs.write(mx, rs)
 	case *qp.ClunkRequest:
-		go fs.clunk(mx)
+		go fs.clunk(mx, rs)
 	case *qp.RemoveRequest:
-		go fs.remove(mx)
+		go fs.remove(mx, rs)
 	case *qp.StatRequest:
-		go fs.stat(mx)
+		go fs.stat(mx, rs)
 	case *qp.WriteStatRequest:
-		go fs.writeStat(mx)
+		go fs.writeStat(mx, rs)
 	default:
-		fs.sendError(t, UnsupportedMessage)
+		fs.sendError(rs, UnsupportedMessage)
 	}
 	return nil
 }
@@ -1094,7 +1109,7 @@ func New(rw io.ReadWriter, defaultRoot trees.File, roots map[string]trees.File) 
 		Roots:       roots,
 		Verbosity:   Quiet,
 		MessageSize: MessageSize,
-		tags:        make(map[qp.Tag]bool),
+		tags:        make(map[qp.Tag]*requestState),
 	}
 
 	fs.Encoder = &qp.Encoder{
