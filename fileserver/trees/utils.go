@@ -10,7 +10,9 @@ import (
 
 // Common errors.
 var (
-	ErrPermissionDenied = errors.New("permission denied")
+	ErrPermissionDenied  = errors.New("permission denied")
+	ErrFileAlreadyExists = errors.New("file already exists")
+	ErrNoSuchFile        = errors.New("no such file")
 )
 
 var (

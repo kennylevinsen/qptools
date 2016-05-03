@@ -188,7 +188,7 @@ func (d *SyntheticDir) Create(user, name string, perms qp.FileMode) (File, error
 
 	_, ok := d.Tree[name]
 	if ok {
-		return nil, errors.New("file already exists")
+		return nil, ErrFileAlreadyExists
 	}
 
 	var f File
@@ -213,7 +213,7 @@ func (d *SyntheticDir) Add(name string, f File) error {
 	defer d.Unlock()
 	_, ok := d.Tree[name]
 	if ok {
-		return errors.New("file already exists")
+		return ErrFileAlreadyExists
 	}
 	d.Tree[name] = f
 	d.Mtime = time.Now()
@@ -227,14 +227,15 @@ func (d *SyntheticDir) Rename(user, oldname, newname string) error {
 	defer d.Unlock()
 	_, ok := d.Tree[oldname]
 	if !ok {
-		return errors.New("file not found")
+		return ErrNoSuchFile
 	}
 	_, ok = d.Tree[newname]
 	if ok {
-		return errors.New("file already exists")
+		return ErrFileAlreadyExists
 	}
 
-	if !d.CanOpen(user, qp.OWRITE) {
+	owner := d.UID == user
+	if !PermCheck(owner, false, d.Permissions, qp.OWRITE) {
 		return ErrPermissionDenied
 	}
 
@@ -257,7 +258,7 @@ func (d *SyntheticDir) Remove(user, name string) error {
 
 	f, exists := d.Tree[name]
 	if !exists {
-		return errors.New("no such file")
+		return ErrNoSuchFile
 	}
 
 	rem, err := f.CanRemove()
