@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ var (
 	user    = kingpin.Flag("user", "username to use when connecting (uname)").Short('u').String()
 	address = kingpin.Arg("address", "address to connect to").Required().String()
 	command = stringList(kingpin.Arg("command", "command to execute (disables interactive mode)"))
+	rawtls  = kingpin.Flag("rawtls", "wrap connection in TLS").Short('t').Bool()
 )
 
 type slist []string
@@ -538,10 +540,22 @@ func rm(root, cwd client.Fid, cmdline string) (client.Fid, error) {
 func main() {
 	kingpin.Parse()
 
-	conn, err := net.Dial("tcp", *address)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Connect failed: %v\n", err)
-		return
+	var conn net.Conn
+	var err error
+	if *rawtls {
+		conn, err = tls.Dial("tcp", *address, &tls.Config{
+			InsecureSkipVerify: true,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Connect failed: %v\n", err)
+			return
+		}
+	} else {
+		conn, err = net.Dial("tcp", *address)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Connect failed: %v\n", err)
+			return
+		}
 	}
 
 	c := client.New(conn)
