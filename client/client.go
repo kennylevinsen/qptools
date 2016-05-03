@@ -35,7 +35,7 @@ func toError(m qp.Message) error {
 // Client allows for wrapped access to the low-level 9P primitives, but
 // without having to deal with concerns about actual serialization.
 type Client struct {
-	fids    map[qp.Fid]*fid
+	fids    map[qp.Fid]*ClientFid
 	fidLock sync.Mutex
 	client  *RawClient
 	nextFid qp.Fid
@@ -45,7 +45,7 @@ type Client struct {
 func New(rw io.ReadWriter) *Client {
 	c := NewRawClient(rw)
 	return &Client{
-		fids:   make(map[qp.Fid]*fid),
+		fids:   make(map[qp.Fid]*ClientFid),
 		client: c,
 	}
 }
@@ -56,7 +56,7 @@ func (dc *Client) Serve() error {
 }
 
 // getFid allocates and returns a new Fid.
-func (dc *Client) getFid() (*fid, error) {
+func (dc *Client) getFid() (*ClientFid, error) {
 	dc.fidLock.Lock()
 	defer dc.fidLock.Unlock()
 	for i := qp.Fid(0); i < qp.NOFID; i++ {
@@ -68,7 +68,7 @@ func (dc *Client) getFid() (*fid, error) {
 			}
 		}
 		if !taken {
-			f := &fid{
+			f := &ClientFid{
 				fid:    i,
 				parent: dc,
 			}
@@ -80,7 +80,7 @@ func (dc *Client) getFid() (*fid, error) {
 }
 
 // rmFid removes a Fid from the usage pool.
-func (dc *Client) rmFid(f *fid) error {
+func (dc *Client) rmFid(f *ClientFid) error {
 	dc.fidLock.Lock()
 	defer dc.fidLock.Unlock()
 	_, ok := dc.fids[f.fid]
@@ -229,25 +229,24 @@ func (dc *Client) Attach(authfid Fid, user, service string) (Fid, qp.Qid, error)
 
 // fid represents a fid, implementing all 9P features that operate on a
 // fid.
-type fid struct {
+type ClientFid struct {
 	fid        qp.Fid
 	parent     *Client
-	offset     int64
 	offsetLock sync.Mutex
 }
 
 // ID returns the integer value of the fid as a qp.Fid.
-func (f *fid) ID() qp.Fid {
+func (f *ClientFid) ID() qp.Fid {
 	return f.fid
 }
 
 // MessageSize returns the message size of the parent connections client.
-func (f *fid) MessageSize() uint32 {
+func (f *ClientFid) MessageSize() uint32 {
 	return f.parent.client.MessageSize()
 }
 
 // Walk sends Twalk.
-func (f *fid) Walk(names []string) (Fid, []qp.Qid, error) {
+func (f *ClientFid) Walk(names []string) (Fid, []qp.Qid, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return nil, nil, err
@@ -288,7 +287,7 @@ func (f *fid) Walk(names []string) (Fid, []qp.Qid, error) {
 }
 
 // Clunk sends Tclunk.
-func (f *fid) Clunk() error {
+func (f *ClientFid) Clunk() error {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return err
@@ -313,7 +312,7 @@ func (f *fid) Clunk() error {
 }
 
 // Remove sends Tremove.
-func (f *fid) Remove() error {
+func (f *ClientFid) Remove() error {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return err
@@ -338,7 +337,7 @@ func (f *fid) Remove() error {
 }
 
 // Open sends Topen.
-func (f *fid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
+func (f *ClientFid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return qp.Qid{}, 0, err
@@ -366,7 +365,7 @@ func (f *fid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
 }
 
 // Create sends Tcreate.
-func (f *fid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.Qid, uint32, error) {
+func (f *ClientFid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.Qid, uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return qp.Qid{}, 0, err
@@ -396,7 +395,7 @@ func (f *fid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.Qid, u
 }
 
 // ReadOnce is the primitive API, and is directly equivalent to sending a Tread.
-func (f *fid) ReadOnce(offset uint64, count uint32) ([]byte, error) {
+func (f *ClientFid) ReadOnce(offset uint64, count uint32) ([]byte, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return nil, err
@@ -423,7 +422,7 @@ func (f *fid) ReadOnce(offset uint64, count uint32) ([]byte, error) {
 }
 
 // WriteOnce is the primitive API, and is directly equivalent to sending a Twrite.
-func (f *fid) WriteOnce(offset uint64, data []byte) (uint32, error) {
+func (f *ClientFid) WriteOnce(offset uint64, data []byte) (uint32, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return 0, err
@@ -451,7 +450,7 @@ func (f *fid) WriteOnce(offset uint64, data []byte) (uint32, error) {
 }
 
 // Stat sends Tstat.
-func (f *fid) Stat() (qp.Stat, error) {
+func (f *ClientFid) Stat() (qp.Stat, error) {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return qp.Stat{}, err
@@ -478,7 +477,7 @@ func (f *fid) Stat() (qp.Stat, error) {
 }
 
 // WriteStat sends Twstat.
-func (f *fid) WriteStat(stat qp.Stat) error {
+func (f *ClientFid) WriteStat(stat qp.Stat) error {
 	t, err := f.parent.client.Tag()
 	if err != nil {
 		return err

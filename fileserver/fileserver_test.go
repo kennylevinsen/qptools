@@ -337,7 +337,7 @@ func TestClunkRemove(t *testing.T) {
 		Tag: 1,
 		Fid: 0,
 	})
-	dbg.NextMessage()
+	dbg.ReadMessage()
 
 	if ff.opened != 0 {
 		t.Errorf("open count was %d, expected 0", ff.opened)
@@ -354,7 +354,7 @@ func TestClunkRemove(t *testing.T) {
 		Tag: 1,
 		Fid: 0,
 	})
-	dbg.NextMessage()
+	dbg.ReadMessage()
 
 	if ff.opened != 0 {
 		t.Errorf("open count was %d, expected 0", ff.opened)

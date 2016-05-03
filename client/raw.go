@@ -240,7 +240,7 @@ func (c *RawClient) MessageSize() uint32 {
 // Serve executes the response parsing loop.
 func (c *RawClient) Serve() error {
 	for atomic.LoadUint32(&c.errorCnt) == 0 {
-		m, err := c.decoder.NextMessage()
+		m, err := c.decoder.ReadMessage()
 		if err != nil {
 			return c.die(err)
 		}

@@ -161,7 +161,7 @@ func version(version string, tag qp.Tag, msize int, fs *FileServer, dbg *debugTh
 		MessageSize: 4096,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: version failed: %v", filepath.Base(file), line, err)
 	}
@@ -187,7 +187,7 @@ func auth(authfid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugThing, t *testin
 		AuthFid: authfid,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: auth failed: %v", filepath.Base(file), line, err)
 	}
@@ -209,7 +209,7 @@ func authfail(authfid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *de
 		AuthFid: authfid,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: auth failed: %v", filepath.Base(file), line, err)
 	}
@@ -236,7 +236,7 @@ func attach(fid, authfid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugThing, t 
 		Fid:     fid,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
 	}
@@ -259,7 +259,7 @@ func attachfail(fid, authfid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, 
 		Fid:     fid,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: attach failed: %v", filepath.Base(file), line, err)
 	}
@@ -286,7 +286,7 @@ func open(mode qp.OpenMode, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugTh
 		Mode: mode,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: open failed: %v", filepath.Base(file), line, err)
 	}
@@ -309,7 +309,7 @@ func openfail(mode qp.OpenMode, fid qp.Fid, tag qp.Tag, errstr string, fs *FileS
 		Mode: mode,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: open failed: %v", filepath.Base(file), line, err)
 	}
@@ -338,7 +338,7 @@ func create(name string, mode qp.OpenMode, perm qp.FileMode, fid qp.Fid, tag qp.
 		Mode:        mode,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: create failed: %v", filepath.Base(file), line, err)
 	}
@@ -363,7 +363,7 @@ func createfail(name string, mode qp.OpenMode, perm qp.FileMode, fid qp.Fid, tag
 		Mode:        mode,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: create failed: %v", filepath.Base(file), line, err)
 	}
@@ -390,7 +390,7 @@ func wstat(stat qp.Stat, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugThing
 		Stat: stat,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: create failed: %v", filepath.Base(file), line, err)
 	}
@@ -413,7 +413,7 @@ func wstatfail(stat qp.Stat, fid qp.Fid, tag qp.Tag, errstr string, fs *FileServ
 		Stat: stat,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: create failed: %v", filepath.Base(file), line, err)
 	}
@@ -441,7 +441,7 @@ func walk(names []string, newfid, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *d
 		Names:  names,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: walk failed: %v", filepath.Base(file), line, err)
 	}
@@ -465,7 +465,7 @@ func walkfail(names []string, newfid, fid qp.Fid, tag qp.Tag, errstr string, fs 
 		Names:  names,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: walk failed: %v", filepath.Base(file), line, err)
 	}
@@ -493,7 +493,7 @@ func read(offset uint64, count uint32, fid qp.Fid, tag qp.Tag, expected []byte, 
 		Count:  count,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: read failed: %v", filepath.Base(file), line, err)
 	}
@@ -521,7 +521,7 @@ func readfail(offset uint64, count uint32, fid qp.Fid, tag qp.Tag, errstr string
 		Count:  count,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: read failed: %v", filepath.Base(file), line, err)
 	}
@@ -549,7 +549,7 @@ func write(offset uint64, payload []byte, fid qp.Fid, tag qp.Tag, fs *FileServer
 		Data:   payload,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: write failed: %v", filepath.Base(file), line, err)
 	}
@@ -577,7 +577,7 @@ func writefail(offset uint64, payload []byte, fid qp.Fid, tag qp.Tag, errstr str
 		Data:   payload,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: write failed: %v", filepath.Base(file), line, err)
 	}
@@ -603,7 +603,7 @@ func stat(fid qp.Fid, tag qp.Tag, expected qp.Stat, fs *FileServer, dbg *debugTh
 		Fid: fid,
 	})
 
-	m, err := dbg.NextMessage()
+	m, err := dbg.ReadMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: stat failed: %v", filepath.Base(file), line, err)
 	}

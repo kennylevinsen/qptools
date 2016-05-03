@@ -1079,7 +1079,7 @@ func (fs *FileServer) received(m qp.Message) error {
 // Serve starts the response parsing loop.
 func (fs *FileServer) Serve() error {
 	for atomic.LoadUint32(&fs.errorCnt) == 0 {
-		m, err := fs.Decoder.NextMessage()
+		m, err := fs.Decoder.ReadMessage()
 		if err != nil {
 			return fs.die(err)
 		}
