@@ -54,6 +54,9 @@ func (wf *WrappedFid) ReadAt(p []byte, off int64) (int, error) {
 		if err != nil {
 			return read, err
 		}
+		if len(b) == 0 {
+			break
+		}
 		copy(p[read:], b)
 		read += len(b)
 		o += uint64(len(b))
