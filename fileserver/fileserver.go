@@ -515,7 +515,7 @@ func (fs *FileServer) flush(r *qp.FlushRequest) {
 
 // walkTo handles the walking logic. Walk returns a fidState, len(names) qids
 // and a nil error if the walk succeeded. If the walk was partially successful,
-// it returns anil fidState, less than len(names) qids and a nil error. If the
+// it returns a nil fidState, less than len(names) qids and a nil error. If the
 // walk was completely unsuccessful, a nil fidState, nil qid slice and a non-nil
 // error is returned.
 func walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
@@ -527,6 +527,10 @@ func walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
 	newloc := state.location.Clone()
 	username := state.username
 	state.RUnlock()
+
+	if root == nil {
+		return nil, nil, errors.New(InvalidOpOnFid)
+	}
 
 	if handle != nil {
 		// Can't walk on an open fid.
@@ -541,10 +545,6 @@ func walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
 			location: newloc,
 		}
 		return x, nil, nil
-	}
-
-	if root == nil {
-		return nil, nil, errors.New(InvalidOpOnFid)
 	}
 
 	first := true
