@@ -117,3 +117,8 @@ func (wf *WrappedFid) WriteAt(p []byte, off int64) (int, error) {
 func (wf *WrappedFid) Close() error {
 	return wf.Fid.Clunk()
 }
+
+// WrapFid returns a *WrappedFid.
+func WrapFid(f Fid) *WrappedFid {
+	return &WrappedFid{Fid: f}
+}
