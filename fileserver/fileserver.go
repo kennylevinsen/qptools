@@ -216,16 +216,18 @@ func (fs *FileServer) respond(t qp.Tag, m qp.Message) {
 	// existed. Otherwise, we risk that the tag gets flushed while we're sending
 	// the response, potentially sending an Rflush before we start sending the
 	// response, which would violate protocol.
-	fs.tagLock.Lock()
 
-	if _, tagPresent := fs.tags[t]; t != qp.NOTAG && !tagPresent {
+	if t != qp.NOTAG {
+		fs.tagLock.Lock()
+		if _, tagPresent := fs.tags[t]; !tagPresent {
+			fs.tagLock.Unlock()
+			return
+		}
+		delete(fs.tags, t)
 		fs.tagLock.Unlock()
-		return
 	}
 
-	delete(fs.tags, t)
 	fs.logresp(t, m)
-	fs.tagLock.Unlock()
 
 	err := fs.Encoder.WriteMessage(m)
 	switch err {
@@ -296,22 +298,15 @@ func (fs *FileServer) addTag(t qp.Tag) error {
 	}
 
 	fs.tagLock.Lock()
-	defer fs.tagLock.Unlock()
-	_, exists := fs.tags[t]
-	if exists {
+	if _, exists := fs.tags[t]; exists {
+		fs.tagLock.Unlock()
 		return errors.New(TagInUse)
 	}
-	fs.tags[t] = true
-	return nil
-}
 
-// flushTag removes the tag.
-func (fs *FileServer) flushTag(t qp.Tag) {
-	fs.tagLock.Lock()
-	defer fs.tagLock.Unlock()
-	if _, exists := fs.tags[t]; exists {
-		delete(fs.tags, t)
-	}
+	fs.tags[t] = true
+	fs.tagLock.Unlock()
+
+	return nil
 }
 
 func (fs *FileServer) version(r *qp.VersionRequest) {
@@ -507,7 +502,9 @@ func (fs *FileServer) attach(r *qp.AttachRequest) {
 
 func (fs *FileServer) flush(r *qp.FlushRequest) {
 	defer fs.handlePanic()
-	fs.flushTag(r.OldTag)
+	fs.tagLock.Lock()
+	delete(fs.tags, r.OldTag)
+	fs.tagLock.Unlock()
 	fs.respond(r.Tag, &qp.FlushResponse{
 		Tag: r.Tag,
 	})
@@ -852,11 +849,9 @@ func (fs *FileServer) read(r *qp.ReadRequest) {
 		return
 	}
 
-	b = b[:n]
-
 	fs.respond(r.Tag, &qp.ReadResponse{
 		Tag:  r.Tag,
-		Data: b,
+		Data: b[:n],
 	})
 }
 
