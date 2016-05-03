@@ -3,6 +3,7 @@ package fileserver
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -13,214 +14,264 @@ import (
 
 const TestVerbosity = Quiet
 
-func TestWalkTo(t *testing.T) {
-	//
-	//	/
-	//		file1
-	// 		file2
-	//      ...
-	// 		dir1/
-	// 			dir2/
-	// 				file3
-	//
-	root := trees.NewSyntheticDir("", 0777, "", "")
+func testStructure1() trees.Dir {
+	root := trees.NewSyntheticDir("root", 0777, "", "")
+
 	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
 	root.Add("file1", file1)
+
 	file2 := trees.NewSyntheticFile("file2", 0777, "", "")
 	root.Add("file2", file2)
+
 	ddd := trees.NewSyntheticFile("...", 0777, "", "")
 	root.Add("...", ddd)
+
 	dir1 := trees.NewSyntheticDir("dir1", 0777, "", "")
 	root.Add("dir1", dir1)
+
 	dir2 := trees.NewSyntheticDir("dir2", 0777, "", "")
 	dir1.Add("dir2", dir2)
+
 	file3 := trees.NewSyntheticFile("file3", 0777, "", "")
 	dir2.Add("file3", file3)
 
-	s := &fidState{
-		username: "",
-		location: FilePath{root},
-	}
+	dir3 := trees.NewSyntheticDir("dir3", 0777, "", "")
+	file4 := trees.NewSyntheticFile("file4", 0777, "", "")
+	dir3.Add("file4", file4)
+	file5 := trees.NewSyntheticFile("file5", 0777, "", "")
+	whdir3 := newWalkHook(dir3, file5, nil)
+	root.Add("dir3", whdir3)
 
-	f := &fidState{
-		username: "",
-		location: FilePath{file1},
-	}
+	dir4 := trees.NewSyntheticDir("dir4", 0777, "", "")
+	file6 := trees.NewSyntheticFile("file6", 0777, "", "")
+	dir4.Add("file6", file6)
+	whdir4 := newWalkHook(dir4, nil, fmt.Errorf("!"))
+	root.Add("dir4", whdir4)
 
-	h, _ := file1.Open("", qp.OREAD)
+	dir5 := trees.NewSyntheticDir("dir5", 0777, "", "")
+	root.Add("dir5", dir5)
 
-	o := &fidState{
-		username: "",
-		location: FilePath{file1},
-		handle:   h,
-	}
+	file7 := trees.NewSyntheticFile("file7", 0777, "", "")
+	file8 := trees.NewSyntheticFile("file8", 0777, "", "")
+	afile7 := newArrivedHook(file7, file8, nil)
+	dir5.Add("file7", afile7)
 
-	// Go to file1
-	f1, q1, err := walkTo(s, []string{"file1"})
+	file9 := trees.NewSyntheticFile("file9", 0777, "", "")
+	afile9 := newArrivedHook(file9, nil, fmt.Errorf("!"))
+	dir5.Add("file9", afile9)
+
+	return root
+}
+
+func verifyWalkSuccess(s *fidState, names []string, target string) error {
+	f1, q1, err := walkTo(s, names)
 	if err != nil {
-		t.Errorf("walk to file1 failed: %v", err)
+		return fmt.Errorf("walk to %s failed: %v", target, err)
 	}
-	if len(q1) != 1 {
-		t.Errorf("expected 1 qid, got %d", len(q1))
+	if len(q1) != len(names) {
+		return fmt.Errorf("expected %d qid, got %d", len(names), len(q1))
 	}
-	if f1.location.Current() != file1 {
-		t.Errorf("expected file1, got %v", f1)
-	}
-
-	// Go back up
-	f2, q2, err := walkTo(f1, []string{".."})
+	f := f1.location.Current()
+	name, err := f.Name()
 	if err != nil {
-		t.Errorf("walk to .. failed: %v", err)
+		return fmt.Errorf("could not get destination file name: %v", err)
 	}
-	if len(q2) != 1 {
-		t.Errorf("expected 1 qid, got %d", len(q2))
-	}
-	if f2.location.Current() != root {
-		t.Errorf("expected root, got %v", f2)
+	if name != target {
+		return fmt.Errorf("expected file name %s, got %s", target, name)
 	}
 
-	// Try to go up again
-	f3, q3, err := walkTo(s, []string{".."})
-	if err != nil {
-		t.Errorf("walk to .. failed: %v", err)
+	return nil
+}
+
+func verifyWalkFailure(s *fidState, names []string, expectedQids int, expectNilQids, expectError bool) error {
+	f1, q1, err := walkTo(s, names)
+	if expectError && err == nil {
+		return fmt.Errorf("walk did not return error as expected")
 	}
-	if len(q3) != 1 {
-		t.Errorf("expected 1 qid, got %d", len(q3))
+	if expectNilQids && q1 != nil {
+		return fmt.Errorf("walk did not return nil qids as expected")
 	}
-	if f3.location.Current() != root {
-		t.Errorf("expected root, got %v", f3)
+	if expectedQids != len(q1) {
+		return fmt.Errorf("expected %d qid, got %d", expectedQids, len(q1))
+	}
+	if f1 != nil {
+		return fmt.Errorf("walk did not return nil *fidState as expected")
 	}
 
-	// Go to ...
-	f4, q4, err := walkTo(s, []string{"..."})
-	if err != nil {
-		t.Errorf("walk to ... failed: %v", err)
+	return nil
+}
+
+func TestWalkToFile(t *testing.T) {
+	root := testStructure1()
+	s := &fidState{location: FilePath{root}}
+	if err := verifyWalkSuccess(s, []string{"file1"}, "file1"); err != nil {
+		t.Errorf("1: %v", err)
 	}
-	if len(q4) != 1 {
-		t.Errorf("expected 1 qid, got %d", len(q4))
+	if err := verifyWalkSuccess(s, []string{"dir1", "dir2", "file3"}, "file3"); err != nil {
+		t.Errorf("2: %v", err)
 	}
-	if f4.location.Current() != ddd {
-		t.Errorf("expected ddd, got %v", f4)
+}
+
+func TestWalkUp(t *testing.T) {
+	root := testStructure1()
+	s1 := &fidState{location: FilePath{root}}
+	if err := verifyWalkSuccess(s1, []string{"file1", ".."}, "root"); err != nil {
+		t.Errorf("1: %v", err)
 	}
 
-	// Traverse multiple files
-	f5, q5, err := walkTo(s, []string{"dir1", "dir2", "file3"})
-	if err != nil {
-		t.Errorf("walk to dir1/dir2/file3 failed: %v", err)
-	}
-	if len(q5) != 3 {
-		t.Errorf("expected 3 qid, got %d", len(q5))
-	}
-	if f5.location.Current() != file3 {
-		t.Errorf("expected file3, got %v", f5)
+	f, _ := root.Walk("", "file1")
+	s2 := &fidState{location: FilePath{root, f}}
+	if err := verifyWalkSuccess(s2, []string{".."}, "root"); err != nil {
+		t.Errorf("2: %v", err)
 	}
 
-	// Go to .
-	f6, q6, err := walkTo(f1, []string{"."})
-	if err != nil {
-		t.Errorf("walk to . failed: %v", err)
+	if err := verifyWalkSuccess(s1, []string{".."}, "root"); err != nil {
+		t.Errorf("3: %v", err)
 	}
-	if len(q6) != 1 {
-		t.Errorf("expected 1 qid, got %d", len(q6))
+}
+
+func TestWalkDot(t *testing.T) {
+	root := testStructure1()
+	s1 := &fidState{location: FilePath{root}}
+	if err := verifyWalkSuccess(s1, []string{"."}, "root"); err != nil {
+		t.Errorf("1: %v", err)
 	}
-	if f6.location.Current() != file1 {
-		t.Errorf("expected file1, got %v", f6)
+	if err := verifyWalkSuccess(s1, []string{"file1", "."}, "file1"); err != nil {
+		t.Errorf("2: %v", err)
 	}
 
-	// Complicated walk
-	f7, q7, err := walkTo(s, []string{"dir1", "dir2", "file3", "..", ".", "..", "..", "file1", "..", "file2"})
-	if err != nil {
-		t.Errorf("walk to dir1/dir2/file3/.././../file1 failed: %v", err)
+	f, _ := root.Walk("", "file1")
+	s2 := &fidState{location: FilePath{root, f}}
+	if err := verifyWalkSuccess(s2, []string{"."}, "file1"); err != nil {
+		t.Errorf("3: %v", err)
 	}
-	if len(q7) != 10 {
-		t.Errorf("expected 10 qid, got %d", len(q7))
-	}
-	if f7.location.Current() != file2 {
-		t.Errorf("expected file2, got %v", f7)
+}
+
+func TestWalkNil(t *testing.T) {
+	root := testStructure1()
+	s1 := &fidState{location: FilePath{root}}
+	if err := verifyWalkSuccess(s1, nil, "root"); err != nil {
+		t.Errorf("1: %v", err)
 	}
 
-	// Partial walk
-	f8, q8, err := walkTo(s, []string{"dir1", "dir3"})
-	if err != nil {
-		t.Errorf("walk to dir1/dir3 failed: %v", err)
+	f, _ := root.Walk("", "file1")
+	s2 := &fidState{location: FilePath{root, f}}
+	if err := verifyWalkSuccess(s2, nil, "file1"); err != nil {
+		t.Errorf("2: %v", err)
 	}
-	if len(q8) != 1 {
-		t.Errorf("expected 1 qid, got %d", len(q8))
+}
+
+func TestWalkComplicated(t *testing.T) {
+	root := testStructure1()
+	s := &fidState{location: FilePath{root}}
+	if err := verifyWalkSuccess(s, []string{"dir1", "dir2", "file3", "..", ".", "..", "..", "file1", "..", "file2"}, "file2"); err != nil {
+		t.Errorf("1: %v", err)
 	}
-	if f8 != nil {
-		t.Errorf("expected nil file, got %v", f8)
+}
+
+func TestWalkToNonExistantFile(t *testing.T) {
+	root := testStructure1()
+	s := &fidState{location: FilePath{root}}
+
+	if err := verifyWalkFailure(s, []string{"fakeFile"}, 0, true, true); err != nil {
+		t.Errorf("1: %v", err)
+	}
+	if err := verifyWalkFailure(s, []string{"fakeDir", "fakeFile"}, 0, true, true); err != nil {
+		t.Errorf("2: %v", err)
+	}
+	if err := verifyWalkFailure(s, []string{"dir1", "fakeDir"}, 1, false, false); err != nil {
+		t.Errorf("3: %v", err)
+	}
+	if err := verifyWalkFailure(s, []string{"dir1", "fakeDir", "fakeFile"}, 1, false, false); err != nil {
+		t.Errorf("4: %v", err)
+	}
+}
+
+func TestWalkNonDirectory(t *testing.T) {
+	root := testStructure1()
+	s1 := &fidState{location: FilePath{root}}
+
+	if err := verifyWalkFailure(s1, []string{"file1", "fakeFile"}, 1, false, false); err != nil {
+		t.Errorf("1: %v", err)
 	}
 
-	// Fail on first walk
-	f9, q9, err := walkTo(s, []string{"dir3", "dir3"})
-	if err == nil {
-		t.Errorf("walk to dir3/dir3 succeeded, expected failure")
-	}
-	if q9 != nil {
-		t.Errorf("expected nil qids, got %v", q9)
-	}
-	if f9 != nil {
-		t.Errorf("expected nil file, got %v", f9)
+	if err := verifyWalkFailure(s1, []string{"file1", "fakeFile", ".."}, 1, false, false); err != nil {
+		t.Errorf("2: %v", err)
 	}
 
-	// nil walk
-	f10, q10, err := walkTo(s, nil)
-	if err != nil {
-		t.Errorf("nil walk failed: %v", err)
+	f, _ := root.Walk("", "file1")
+	s2 := &fidState{location: FilePath{f}}
+
+	if err := verifyWalkFailure(s2, []string{"fakeFile"}, 0, true, true); err != nil {
+		t.Errorf("3: %v", err)
 	}
-	if len(q10) != 0 {
-		t.Errorf("expected 0 qid, got %d", len(q10))
+}
+
+func TestWalkOpenFid(t *testing.T) {
+	root := testStructure1()
+	f, _ := root.Walk("", "dir1")
+	h, _ := f.Open("", qp.OREAD)
+	s1 := &fidState{location: FilePath{root, f}, handle: h}
+
+	if err := verifyWalkFailure(s1, []string{"."}, 0, true, true); err != nil {
+		t.Errorf("1: %v", err)
 	}
-	if f10.location.Current() != root {
-		t.Errorf("expected root, got %v", f10)
+}
+
+func TestWalkEmptyLocation(t *testing.T) {
+	s1 := &fidState{location: FilePath{}}
+
+	if err := verifyWalkFailure(s1, nil, 0, true, true); err != nil {
+		t.Errorf("1: %v", err)
+	}
+	if err := verifyWalkFailure(s1, []string{"."}, 0, true, true); err != nil {
+		t.Errorf("2: %v", err)
+	}
+	if err := verifyWalkFailure(s1, []string{".."}, 0, true, true); err != nil {
+		t.Errorf("3: %v", err)
+	}
+	if err := verifyWalkFailure(s1, []string{"fakeFile"}, 0, true, true); err != nil {
+		t.Errorf("4: %v", err)
+	}
+}
+
+func TestWalkToWalkHook(t *testing.T) {
+	root := testStructure1()
+	s1 := &fidState{location: FilePath{root}}
+
+	if err := verifyWalkSuccess(s1, []string{"dir3", "file4"}, "file5"); err != nil {
+		t.Errorf("1: %v", err)
 	}
 
-	// Fail on second walk
-	f11, q11, err := walkTo(s, []string{"dir1", "dir3", "file3"})
-	if err != nil {
-		t.Errorf("walk to dir1/dir3/file3 failed: %v", err)
-	}
-	if len(q11) != 1 {
-		t.Errorf("expected 1 qid, got %d", len(q10))
-	}
-	if f11 != nil {
-		t.Errorf("expected nil file, got %v", f11)
+	if err := verifyWalkFailure(s1, []string{"dir4", "file4"}, 1, false, false); err != nil {
+		t.Errorf("2: %v", err)
 	}
 
-	// Fail due to non-directory walk
-	f12, q12, err := walkTo(s, []string{"file1", "file2", "file3"})
-	if err != nil {
-		t.Errorf("walk to file1/file2/file3 failed: %v", err)
+	dir4, _ := root.Walk("", "dir4")
+	s2 := &fidState{location: FilePath{root, dir4}}
+
+	if err := verifyWalkFailure(s2, []string{"file4"}, 0, true, true); err != nil {
+		t.Errorf("3: %v", err)
 	}
-	if len(q12) != 1 {
-		t.Errorf("expected 1 qid, got %d", len(q10))
-	}
-	if f12 != nil {
-		t.Errorf("expected nil file, got %v", f12)
+}
+
+func TestWalkToArrivedHook(t *testing.T) {
+	root := testStructure1()
+	s1 := &fidState{location: FilePath{root}}
+
+	if err := verifyWalkSuccess(s1, []string{"dir5", "file7"}, "file8"); err != nil {
+		t.Errorf("1: %v", err)
 	}
 
-	// Fail due to non-directory root walk
-	f13, q13, err := walkTo(f, []string{"file1"})
-	if err == nil {
-		t.Errorf("walk to file1 succeeded, expected failure")
-	}
-	if q13 != nil {
-		t.Errorf("expected nil qids, got %v", q13)
-	}
-	if f13 != nil {
-		t.Errorf("expected nil file, got %v", f13)
+	if err := verifyWalkFailure(s1, []string{"dir5", "file9"}, 1, false, false); err != nil {
+		t.Errorf("2: %v", err)
 	}
 
-	// Fail due to open fid
-	f14, q14, err := walkTo(o, []string{"."})
-	if err == nil {
-		t.Errorf("walk to . succeeded, expected failure")
-	}
-	if q14 != nil {
-		t.Errorf("expected nil qids, got %v", q14)
-	}
-	if f14 != nil {
-		t.Errorf("expected nil file, got %v", f14)
+	dir5, _ := root.Walk("", "dir5")
+	s2 := &fidState{location: FilePath{root, dir5}}
+
+	if err := verifyWalkFailure(s2, []string{"file9"}, 0, true, true); err != nil {
+		t.Errorf("3: %v", err)
 	}
 }
 
@@ -525,6 +576,22 @@ func TestAuth(t *testing.T) {
 	}
 }
 
+func TestWalk(t *testing.T) {
+	root := trees.NewSyntheticDir("", 0777, "", "")
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
+	fs := New(p2, root, nil)
+	fs.Verbosity = TestVerbosity
+	go fs.Serve()
+
+	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
+	attach(1, qp.NOFID, 1, fs, dbg, t)
+	walkfail([]string{"file1"}, 2, 1, 1, NoSuchFile, fs, dbg, t)
+}
+
 // TestRead tests if a file and directory can be successfully read.
 func TestRead(t *testing.T) {
 	root := trees.NewSyntheticDir("", 0777, "", "")
@@ -623,4 +690,80 @@ func TestStat(t *testing.T) {
 
 	s2, _ := root.Stat()
 	stat(3, 1, s2, fs, dbg, t)
+}
+
+func TestCreate(t *testing.T) {
+	root := trees.NewSyntheticDir("", 0777, "", "")
+	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
+	file1.SetContent([]byte("Some content"))
+	root.Add("file1", file1)
+
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
+	fs := New(p2, root, nil)
+	fs.Verbosity = TestVerbosity
+	go fs.Serve()
+
+	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
+	attach(1, qp.NOFID, 1, fs, dbg, t)
+	walk(nil, 2, 1, 1, fs, dbg, t)
+	createfail("file1", qp.OREAD, 0777, 1, 1, trees.ErrFileAlreadyExists.Error(), fs, dbg, t)
+	create("file2", qp.OREAD, 0777, 2, 1, fs, dbg, t)
+	walk(nil, 3, 1, 1, fs, dbg, t)
+	create("dir1", qp.OREAD, 0777|qp.DMDIR, 3, 1, fs, dbg, t)
+	createfail("file1", qp.OREAD, 0777, 3, 1, FidOpen, fs, dbg, t)
+}
+
+func emptyStat() qp.Stat {
+	return qp.Stat{
+		Type: ^uint16(0),
+		Dev:  ^uint32(0),
+		Qid: qp.Qid{
+			Type:    ^qp.QidType(0),
+			Version: ^uint32(0),
+			Path:    ^uint64(0),
+		},
+		Mode:   ^qp.FileMode(0),
+		Atime:  ^uint32(0),
+		Mtime:  ^uint32(0),
+		Length: ^uint64(0),
+	}
+}
+
+func TestWriteStat(t *testing.T) {
+	root := trees.NewSyntheticDir("", 0777, "", "")
+	file1 := trees.NewSyntheticFile("file1", 0777, "", "")
+	file1.SetContent([]byte("Some content"))
+	root.Add("file1", file1)
+	file2 := trees.NewSyntheticFile("file2", 0777, "", "")
+	file2.SetContent([]byte("Some content"))
+	root.Add("file2", file2)
+
+	p1, p2 := newPipePair()
+	defer p1.Close()
+	defer p2.Close()
+
+	dbg := newDebugThing(p1)
+	fs := New(p2, root, nil)
+	fs.Verbosity = TestVerbosity
+	go fs.Serve()
+
+	version(qp.Version, qp.NOTAG, 4096, fs, dbg, t)
+	attach(1, qp.NOFID, 1, fs, dbg, t)
+
+	s1 := emptyStat()
+	s1.Name = "file2"
+	wstatfail(s1, 1, 1, "it is illegal to rename root", fs, dbg, t)
+
+	walk([]string{"file1"}, 2, 1, 1, fs, dbg, t)
+
+	wstatfail(s1, 2, 1, trees.ErrFileAlreadyExists.Error(), fs, dbg, t)
+
+	s2 := emptyStat()
+	s2.Name = "file3"
+	wstat(s2, 2, 1, fs, dbg, t)
+
 }

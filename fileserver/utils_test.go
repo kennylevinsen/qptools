@@ -15,6 +15,42 @@ import (
 
 // This file contains test helpers.
 
+type walkHook struct {
+	walkDest trees.File
+	walkErr  error
+	trees.Dir
+}
+
+func (w *walkHook) Walk(user, name string) (trees.File, error) {
+	return w.walkDest, w.walkErr
+}
+
+func newWalkHook(d trees.Dir, f trees.File, e error) *walkHook {
+	return &walkHook{
+		walkDest: f,
+		walkErr:  e,
+		Dir:      d,
+	}
+}
+
+type arrivedHook struct {
+	arrivedDest trees.File
+	arrivedErr  error
+	trees.File
+}
+
+func (a *arrivedHook) Arrived(user string) (trees.File, error) {
+	return a.arrivedDest, a.arrivedErr
+}
+
+func newArrivedHook(f1, f2 trees.File, e error) *arrivedHook {
+	return &arrivedHook{
+		arrivedDest: f2,
+		arrivedErr:  e,
+		File:        f1,
+	}
+}
+
 // pipeRWC allows for tying two io.Pipe's into two io.ReadWriteClosers that can
 // be used to simulate things like network behaviour.
 type pipeRWC struct {
@@ -276,6 +312,110 @@ func openfail(mode qp.OpenMode, fid qp.Fid, tag qp.Tag, errstr string, fs *FileS
 	m, err := dbg.NextMessage()
 	if err != nil {
 		t.Fatalf("%s:%d: open failed: %v", filepath.Base(file), line, err)
+	}
+
+	em, ok := m.(*qp.ErrorResponse)
+	if !ok {
+		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
+	}
+
+	if em.Tag != tag {
+		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
+	}
+
+	if em.Error != errstr {
+		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
+	}
+}
+
+func create(name string, mode qp.OpenMode, perm qp.FileMode, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugThing, t *testing.T) {
+	_, file, line, _ := runtime.Caller(1)
+	dbg.WriteMessage(&qp.CreateRequest{
+		Tag:         tag,
+		Fid:         fid,
+		Name:        name,
+		Permissions: perm,
+		Mode:        mode,
+	})
+
+	m, err := dbg.NextMessage()
+	if err != nil {
+		t.Fatalf("%s:%d: create failed: %v", filepath.Base(file), line, err)
+	}
+
+	am, ok := m.(*qp.CreateResponse)
+	if !ok {
+		t.Fatalf("%s:%d: wrong response: expected a *qp.CreateResponse, got %#v", filepath.Base(file), line, m)
+	}
+
+	if am.Tag != tag {
+		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
+	}
+}
+
+func createfail(name string, mode qp.OpenMode, perm qp.FileMode, fid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugThing, t *testing.T) {
+	_, file, line, _ := runtime.Caller(1)
+	dbg.WriteMessage(&qp.CreateRequest{
+		Tag:         tag,
+		Fid:         fid,
+		Name:        name,
+		Permissions: perm,
+		Mode:        mode,
+	})
+
+	m, err := dbg.NextMessage()
+	if err != nil {
+		t.Fatalf("%s:%d: create failed: %v", filepath.Base(file), line, err)
+	}
+
+	em, ok := m.(*qp.ErrorResponse)
+	if !ok {
+		t.Fatalf("%s:%d: wrong response: expected a *qp.ErrorResponse, got %#v", filepath.Base(file), line, m)
+	}
+
+	if em.Tag != tag {
+		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, em.Tag)
+	}
+
+	if em.Error != errstr {
+		t.Fatalf("%s:%d: error response incorrect: expected %s, got %s", filepath.Base(file), line, errstr, em.Error)
+	}
+}
+
+func wstat(stat qp.Stat, fid qp.Fid, tag qp.Tag, fs *FileServer, dbg *debugThing, t *testing.T) {
+	_, file, line, _ := runtime.Caller(1)
+	dbg.WriteMessage(&qp.WriteStatRequest{
+		Tag:  tag,
+		Fid:  fid,
+		Stat: stat,
+	})
+
+	m, err := dbg.NextMessage()
+	if err != nil {
+		t.Fatalf("%s:%d: create failed: %v", filepath.Base(file), line, err)
+	}
+
+	am, ok := m.(*qp.WriteStatResponse)
+	if !ok {
+		t.Fatalf("%s:%d: wrong response: expected a *qp.CreateResponse, got %#v", filepath.Base(file), line, m)
+	}
+
+	if am.Tag != tag {
+		t.Fatalf("%s:%d: response tag incorrect: expected %d, got %d", filepath.Base(file), line, tag, am.Tag)
+	}
+}
+
+func wstatfail(stat qp.Stat, fid qp.Fid, tag qp.Tag, errstr string, fs *FileServer, dbg *debugThing, t *testing.T) {
+	_, file, line, _ := runtime.Caller(1)
+	dbg.WriteMessage(&qp.WriteStatRequest{
+		Tag:  tag,
+		Fid:  fid,
+		Stat: stat,
+	})
+
+	m, err := dbg.NextMessage()
+	if err != nil {
+		t.Fatalf("%s:%d: create failed: %v", filepath.Base(file), line, err)
 	}
 
 	em, ok := m.(*qp.ErrorResponse)
