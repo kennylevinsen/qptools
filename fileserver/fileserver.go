@@ -272,14 +272,9 @@ func (fs *FileServer) respond(rs *requestState, m qp.Message) {
 			max := int(fs.Encoder.MessageSize - qp.HeaderSize - 4)
 
 			switch {
-			case e.Error == ResponseTooBig:
+			case e.Error == ResponseTooBig || max < len(ResponseTooBig):
 				// Okay, we're done for. We can't even say the message was too
 				// big.
-				fs.die(ErrCouldNotSendErr)
-				return
-			case max < 16:
-				// We should only end up here if someone intentionally messed up
-				// our maxsize.
 				fs.die(ErrCouldNotSendErr)
 				return
 			case len(e.Error) > max:
@@ -313,11 +308,10 @@ func (fs *FileServer) respond(rs *requestState, m qp.Message) {
 }
 
 func (fs *FileServer) sendError(rs *requestState, str string) {
-	e := &qp.ErrorResponse{
+	fs.respond(rs, &qp.ErrorResponse{
 		Tag:   rs.tag,
 		Error: str,
-	}
-	fs.respond(rs, e)
+	})
 }
 
 func (fs *FileServer) version(r *qp.VersionRequest, rs *requestState) {
@@ -440,9 +434,13 @@ func (fs *FileServer) attach(r *qp.AttachRequest, rs *requestState) {
 		return
 	}
 
-	switch {
-	case fs.AuthFile != nil && r.AuthFid != qp.NOFID:
-		// There's an authfile and an authfid - check it.
+	if fs.AuthFile != nil {
+		if r.AuthFid == qp.NOFID {
+			// There's an authfile, but no authfid was provided.
+			fs.sendError(rs, AuthRequired)
+			return
+		}
+
 		as, exists := fs.fids[r.AuthFid]
 		if !exists {
 			fs.sendError(rs, UnknownFid)
@@ -470,13 +468,9 @@ func (fs *FileServer) attach(r *qp.AttachRequest, rs *requestState) {
 			fs.sendError(rs, PermissionDenied)
 			return
 		}
-	case fs.AuthFile == nil && r.AuthFid != qp.NOFID:
+	} else if r.AuthFid != qp.NOFID {
 		// There's no authfile, but an authfid was provided.
 		fs.sendError(rs, AuthNotSupported)
-		return
-	case fs.AuthFile != nil && r.AuthFid == qp.NOFID:
-		// There's an authfile, but no authfid was provided.
-		fs.sendError(rs, AuthRequired)
 		return
 	}
 
@@ -659,19 +653,16 @@ func (fs *FileServer) walk(r *qp.WalkRequest, rs *requestState) {
 	}
 
 	fs.fidLock.RLock()
-	state, exists := fs.fids[r.Fid]
+	state, existsOld := fs.fids[r.Fid]
+	_, existsNew := fs.fids[r.NewFid]
 	fs.fidLock.RUnlock()
 
-	if !exists {
+	if !existsOld {
 		fs.sendError(rs, UnknownFid)
 		return
 	}
 
-	fs.fidLock.RLock()
-	_, exists = fs.fids[r.NewFid]
-	fs.fidLock.RUnlock()
-
-	if exists {
+	if existsNew {
 		fs.sendError(rs, FidInUse)
 		return
 	}
@@ -684,6 +675,19 @@ func (fs *FileServer) walk(r *qp.WalkRequest, rs *requestState) {
 
 	if newfidState != nil {
 		fs.fidLock.Lock()
+		// We have to check if the fid is still available. The walk could block,
+		// or another thread could have beaten us to the race and won the fid
+		// allocation. This implementation avoids temporarily using the fid if
+		// the walk failed, at the cost of an additional map lookup in the
+		// general case, and full walk too much in the worst case. A bit of
+		// research into whether or not it is okay to temporarily consume a fid,
+		// even if the walk fails, is necessary in order to determine the
+		// correct implementation. If it is okay, then pre-allocating the fid
+		// and removing it again if the walk fails should do the trick.
+		if _, existsNew = fs.fids[r.NewFid]; existsNew {
+			fs.sendError(rs, FidInUse)
+			return
+		}
 		fs.fids[r.NewFid] = newfidState
 		fs.fidLock.Unlock()
 	}
