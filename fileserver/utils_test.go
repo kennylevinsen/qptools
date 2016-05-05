@@ -80,8 +80,15 @@ func newPipePair() (*pipeRWC, *pipeRWC) {
 // debugThing ties a qp.Encode and qp.Decoder together over an io.ReadWriter.
 // Useful for integration tests.
 type debugThing struct {
+	writeLock sync.Mutex
 	*qp.Encoder
 	*qp.Decoder
+}
+
+func (dt *debugThing) WriteMessage(m qp.Message) error {
+	dt.writeLock.Lock()
+	defer dt.writeLock.Unlock()
+	return dt.Encoder.WriteMessage(m)
 }
 
 func newDebugThing(rw io.ReadWriter) *debugThing {

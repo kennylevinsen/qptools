@@ -829,6 +829,7 @@ func (fs *FileServer) read(r *qp.ReadRequest, rs *requestState) {
 	fs.fidLock.RLock()
 	state, exists := fs.fids[r.Fid]
 	fs.fidLock.RUnlock()
+
 	if !exists {
 		fs.sendError(rs, UnknownFid)
 		return
