@@ -400,12 +400,10 @@ func (fs *FileServer) auth(r *qp.AuthRequest, rs *requestState) {
 		return
 	}
 
-	s := &fidState{
+	fs.fids[r.AuthFid] = &fidState{
 		username: r.Username,
 		handle:   handle,
 	}
-
-	fs.fids[r.AuthFid] = s
 
 	qid := qp.Qid{
 		Version: ^uint32(0),
@@ -486,12 +484,10 @@ func (fs *FileServer) attach(r *qp.AttachRequest, rs *requestState) {
 		return
 	}
 
-	s := &fidState{
+	fs.fids[r.Fid] = &fidState{
 		username: r.Username,
 		location: FilePath{root},
 	}
-
-	fs.fids[r.Fid] = s
 
 	qid, err := root.Qid()
 	if err != nil {
@@ -523,15 +519,28 @@ func (fs *FileServer) flush(r *qp.FlushRequest, rs *requestState) {
 // it returns a nil fidState, less than len(names) qids and a nil error. If the
 // walk was completely unsuccessful, a nil fidState, nil qid slice and a non-nil
 // error is returned.
-func walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
+func walkTo(oldState *fidState, names []string) (*fidState, []qp.Qid, error) {
+	var (
+		handle          trees.ReadWriteAtCloser
+		isdir, addToLoc bool
+		root, temproot  trees.File
+		username, name  string
+		newloc          FilePath
+		qids            []qp.Qid
+		d               trees.Dir
+		err             error
+		q               qp.Qid
+	)
+
 	// Walk and Arrived can block, so we don't want to be holding locks. Copy
 	// what we need.
-	state.RLock()
-	handle := state.handle
-	root := state.location.Current()
-	newloc := state.location.Clone()
-	username := state.username
-	state.RUnlock()
+	oldState.RLock()
+	handle = oldState.handle
+	newloc = oldState.location.Clone()
+	username = oldState.username
+	oldState.RUnlock()
+
+	root = newloc.Current()
 
 	if root == nil {
 		return nil, nil, errors.New(InvalidOpOnFid)
@@ -542,33 +551,17 @@ func walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
 		return nil, nil, errors.New(FidOpen)
 	}
 
-	if len(names) == 0 {
-		// A 0-length walk is equivalent to walking to ".", which effectively
-		// just clones the fid.
-		x := &fidState{
-			username: username,
-			location: newloc,
-		}
-		return x, nil, nil
-	}
-
-	first := true
-	var isdir bool
-	var err error
-	var qids []qp.Qid
 	for i := range names {
-		addToLoc := true
-		name := names[i]
+		addToLoc = false
+		name = names[i]
 		switch name {
 		case ".":
 			// This always succeeds, but we don't want to add it to our location
 			// list.
-			addToLoc = false
 		case "..":
 			// This also always succeeds, and it either does nothing or shortens
 			// our location list. We don't want anything added to the list
 			// regardless.
-			addToLoc = false
 			root = newloc.Parent()
 			if len(newloc) > 1 {
 				newloc = newloc[:len(newloc)-1]
@@ -576,6 +569,8 @@ func walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
 		default:
 			// A regular file name. In this case, walking to the name is only
 			// legal if the current file is a directory.
+			addToLoc = true
+
 			isdir, err = root.IsDir()
 			if err != nil {
 				return nil, nil, err
@@ -583,33 +578,22 @@ func walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
 
 			if !isdir {
 				// Root isn't a dir, so we can't walk.
-				if first {
-					return nil, nil, errors.New(FidNotDirectory)
-				}
+				err = errors.New(FidNotDirectory)
 				goto done
 			}
 
-			d := root.(trees.Dir)
+			d = root.(trees.Dir)
 			if root, err = d.Walk(username, name); err != nil {
 				// The walk failed for some arbitrary reason.
-				if first {
-					return nil, nil, err
-				}
 				goto done
 			} else if root == nil {
 				// The file did not exist
-				if first {
-					return nil, nil, errors.New(NoSuchFile)
-				}
+				err = errors.New(NoSuchFile)
 				goto done
 			}
 
-			var temproot trees.File
 			if temproot, err = root.Arrived(username); err != nil {
 				// The Arrived callback failed for some arbitrary reason.
-				if first {
-					return nil, nil, err
-				}
 				goto done
 			}
 
@@ -622,17 +606,18 @@ func walkTo(state *fidState, names []string) (*fidState, []qp.Qid, error) {
 			newloc = append(newloc, root)
 		}
 
-		q, err := root.Qid()
+		q, err = root.Qid()
 		if err != nil {
 			return nil, nil, err
 		}
 
 		qids = append(qids, q)
-
-		first = false
 	}
 
 done:
+	if err != nil && len(qids) == 0 {
+		return nil, nil, err
+	}
 	if len(qids) < len(names) {
 		return nil, qids, nil
 	}
@@ -662,7 +647,7 @@ func (fs *FileServer) walk(r *qp.WalkRequest, rs *requestState) {
 		return
 	}
 
-	if existsNew {
+	if existsNew && r.Fid != r.NewFid {
 		fs.sendError(rs, FidInUse)
 		return
 	}
@@ -684,10 +669,19 @@ func (fs *FileServer) walk(r *qp.WalkRequest, rs *requestState) {
 		// even if the walk fails, is necessary in order to determine the
 		// correct implementation. If it is okay, then pre-allocating the fid
 		// and removing it again if the walk fails should do the trick.
-		if _, existsNew = fs.fids[r.NewFid]; existsNew {
+		state, existsNew = fs.fids[r.NewFid]
+		if r.Fid == r.NewFid {
+			if state.handle != nil {
+				fs.fidLock.Unlock()
+				fs.sendError(rs, FidOpen)
+				return
+			}
+		} else if existsNew {
+			fs.fidLock.Unlock()
 			fs.sendError(rs, FidInUse)
 			return
 		}
+
 		fs.fids[r.NewFid] = newfidState
 		fs.fidLock.Unlock()
 	}
