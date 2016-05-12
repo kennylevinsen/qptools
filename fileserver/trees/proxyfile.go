@@ -69,6 +69,7 @@ func (pf *ProxyFile) cache(t bool) {
 	}
 }
 
+// Qid implements File.
 func (pf *ProxyFile) Qid() (qp.Qid, error) {
 	if err := pf.updateInfo(); err != nil {
 		return qp.Qid{}, err
@@ -91,6 +92,7 @@ func (pf *ProxyFile) Qid() (qp.Qid, error) {
 	}, nil
 }
 
+// Name implements File.
 func (pf *ProxyFile) Name() (string, error) {
 	if pf.path == "" {
 		return "/", nil
@@ -98,10 +100,12 @@ func (pf *ProxyFile) Name() (string, error) {
 	return filepath.Base(pf.path), nil
 }
 
+// SetLength implements File.
 func (pf *ProxyFile) SetLength(user string, length uint64) error {
 	return nil
 }
 
+// SetName implements File.
 func (pf *ProxyFile) SetName(user, name string) error {
 	n := filepath.Base(pf.path)
 	if name != "" && name != n {
@@ -111,14 +115,17 @@ func (pf *ProxyFile) SetName(user, name string) error {
 	return nil
 }
 
+// SetOwner implements File.
 func (pf *ProxyFile) SetOwner(user, UID, GID string) error {
 	return nil
 }
 
+// SetMode implements File.
 func (pf *ProxyFile) SetMode(user string, mode qp.FileMode) error {
 	return nil
 }
 
+// Stat implements File.
 func (pf *ProxyFile) Stat() (qp.Stat, error) {
 	if err := pf.updateInfo(); err != nil {
 		return qp.Stat{}, err
@@ -150,6 +157,7 @@ func (pf *ProxyFile) Stat() (qp.Stat, error) {
 	return st, nil
 }
 
+// List implements File.
 func (pf *ProxyFile) List(_ string) ([]qp.Stat, error) {
 	if err := pf.updateInfo(); err != nil {
 		return nil, err
@@ -197,6 +205,7 @@ func (pf *ProxyFile) List(_ string) ([]qp.Stat, error) {
 	return s, nil
 }
 
+// Open implements File.
 func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, error) {
 	if err := pf.updateInfo(); err != nil {
 		return nil, err
@@ -219,10 +228,25 @@ func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, err
 	return os.OpenFile(filepath.Join(pf.root, pf.path), openMode2Flag(mode), 0)
 }
 
+// CanRemove implements File.
 func (pf *ProxyFile) CanRemove() (bool, error) {
 	return true, nil
 }
 
+// Arrived implements File.
+func (pf *ProxyFile) Arrived(_ string) (File, error) {
+	return nil, nil
+}
+
+// IsDir implements File.
+func (pf *ProxyFile) IsDir() (bool, error) {
+	if err := pf.updateInfo(); err != nil {
+		return false, err
+	}
+	return pf.info.IsDir(), nil
+}
+
+// Walk implements Dir.
 func (pf *ProxyFile) Walk(_, name string) (File, error) {
 	p := filepath.Join(pf.path, name)
 
@@ -240,10 +264,7 @@ func (pf *ProxyFile) Walk(_, name string) (File, error) {
 	}, nil
 }
 
-func (pf *ProxyFile) Arrived(_ string) (File, error) {
-	return nil, nil
-}
-
+// Create implements Dir.
 func (pf *ProxyFile) Create(_, name string, perms qp.FileMode) (File, error) {
 	p := filepath.Join(pf.path, name)
 	if perms&qp.DMDIR != 0 {
@@ -267,23 +288,19 @@ func (pf *ProxyFile) Create(_, name string, perms qp.FileMode) (File, error) {
 	}, nil
 }
 
+// Remove implements Dir.
 func (pf *ProxyFile) Remove(_, name string) error {
 	return os.Remove(filepath.Join(pf.root, pf.path, name))
 }
 
+// Rename implements Dir.
 func (pf *ProxyFile) Rename(_, oldname, newname string) error {
 	op := filepath.Join(pf.root, pf.path, oldname)
 	np := filepath.Join(pf.root, pf.path, newname)
 	return os.Rename(op, np)
 }
 
-func (pf *ProxyFile) IsDir() (bool, error) {
-	if err := pf.updateInfo(); err != nil {
-		return false, err
-	}
-	return pf.info.IsDir(), nil
-}
-
+// NewProxyFile returns a new proxy file.
 func NewProxyFile(root, path, user, group string) *ProxyFile {
 	return &ProxyFile{
 		root:  root,

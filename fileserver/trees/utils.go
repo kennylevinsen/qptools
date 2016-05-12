@@ -130,6 +130,7 @@ type AccessLogger interface {
 	Closed()
 }
 
+// PermCheck checks if an openmode is permitted by the file permissions.
 func PermCheck(owner, group bool, permissions qp.FileMode, mode qp.OpenMode) bool {
 	var offset uint8
 	if group {

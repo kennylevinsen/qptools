@@ -45,7 +45,7 @@ func testStructure1() trees.Dir {
 	dir4 := trees.NewSyntheticDir("dir4", 0777, "", "")
 	file6 := trees.NewSyntheticFile("file6", 0777, "", "")
 	dir4.Add("file6", file6)
-	whdir4 := newWalkHook(dir4, nil, fmt.Errorf("!"))
+	whdir4 := newWalkHook(dir4, nil, fmt.Errorf("omg"))
 	root.Add("dir4", whdir4)
 
 	dir5 := trees.NewSyntheticDir("dir5", 0777, "", "")
@@ -57,7 +57,7 @@ func testStructure1() trees.Dir {
 	dir5.Add("file7", afile7)
 
 	file9 := trees.NewSyntheticFile("file9", 0777, "", "")
-	afile9 := newArrivedHook(file9, nil, fmt.Errorf("!"))
+	afile9 := newArrivedHook(file9, nil, fmt.Errorf("omg"))
 	dir5.Add("file9", afile9)
 
 	return root
@@ -629,7 +629,7 @@ func TestRead(t *testing.T) {
 	read(0, 1024, 3, 1, sb1, fs, dbg, t)
 }
 
-// TestWrite tests if a file can be succesfully written to.
+// TestWrite tests if a file can be successfully written to.
 func TestWrite(t *testing.T) {
 	root := trees.NewSyntheticDir("", 0777, "", "")
 	file1 := trees.NewSyntheticFile("file1", 0777, "", "")

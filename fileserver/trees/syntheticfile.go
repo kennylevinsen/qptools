@@ -84,7 +84,7 @@ func (h *SyntheticHandle) Close() error {
 // SyntheticFile is a File implementation that takes care of the more boring
 // aspects of a file implementation, such as permission-handling and qid/stat
 // generation. By default, it serves the Content slice through a
-// SyntheticROHandle. In most cases, one would embed SyntheticFile and provide
+// SyntheticHandle. In most cases, one would embed SyntheticFile and provide
 // their own Open implementation for more interesting functionality.
 type SyntheticFile struct {
 	sync.RWMutex
