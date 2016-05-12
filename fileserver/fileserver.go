@@ -1041,13 +1041,12 @@ func (fs *FileServer) writeStat(r *qp.WriteStatRequest, rs *requestState) {
 	})
 }
 
-func (fs *FileServer) received(m qp.Message) error {
-	t := m.GetTag()
-	fs.logreq(t, m)
-	rs := &requestState{tag: t}
+func (fs *FileServer) received(m qp.Message) {
+	rs := &requestState{tag: m.GetTag()}
+	fs.logreq(rs.tag, m)
 	if err := fs.register(rs, true); err != nil {
 		fs.sendError(rs, err.Error())
-		return nil
+		return
 	}
 
 	switch mx := m.(type) {
@@ -1081,7 +1080,6 @@ func (fs *FileServer) received(m qp.Message) error {
 	default:
 		fs.sendError(rs, UnsupportedMessage)
 	}
-	return nil
 }
 
 // Serve starts the response parsing loop.

@@ -13,11 +13,11 @@ var conv = map[rune]rune{
 }
 
 func parseCommandLine(str string) ([]string, error) {
-	var s []string
-	inDoubleQuote := false
-	inSingleQuote := false
-	inEscape := false
-	var buf string
+	var (
+		s                                      []string
+		buf                                    string
+		inEscape, inSingleQuote, inDoubleQuote bool
+	)
 	for i, c := range str {
 
 		switch c {
