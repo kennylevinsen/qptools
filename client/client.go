@@ -227,7 +227,7 @@ func (dc *Client) Attach(authfid Fid, user, service string) (Fid, qp.Qid, error)
 	return nfid, aresp.Qid, nil
 }
 
-// fid represents a fid, implementing all 9P features that operate on a
+// ClientFid represents a fid, implementing all 9P features that operate on a
 // fid.
 type ClientFid struct {
 	fid        qp.Fid
