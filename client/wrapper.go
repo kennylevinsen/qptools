@@ -49,6 +49,9 @@ func (wf *WrappedFid) ReadAt(p []byte, off int64) (int, error) {
 
 	b, err := wf.Fid.ReadOnce(uint64(off), uint32(len(p)))
 	copy(p, b)
+	if err == nil && len(b) == 0 {
+		err = io.EOF
+	}
 	return len(b), err
 }
 
