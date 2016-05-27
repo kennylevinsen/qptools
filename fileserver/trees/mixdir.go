@@ -8,8 +8,9 @@ import "github.com/joushou/qp"
 // are already present in Bottom and not in Top. The result is somewhat
 // equivalent to a plan9 "bind".
 type MixDir struct {
-	Top    Dir
-	Bottom Dir
+	Top            Dir
+	Bottom         Dir
+	CreateAtBottom bool
 }
 
 // Name lists Top's name,
@@ -121,6 +122,10 @@ func (mt *MixDir) Arrived(_ string) (File, error) {
 
 // Create creates a file in Top.
 func (mt *MixDir) Create(user, name string, perms qp.FileMode) (File, error) {
+	if mt.CreateAtBottom {
+		return mt.Bottom.Create(user, name, perms)
+	}
+
 	return mt.Top.Create(user, name, perms)
 }
 
