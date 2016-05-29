@@ -7,10 +7,10 @@ go:
 install:
   - go get github.com/joushou/qp
   - go get github.com/chzyer/readline
-  - go get gopkg.in/alecthomas/kingpin.v2
+  - go get github.com/alecthomas/kingpin
 
 script:
   - go test ./... -race 
-  - go build -o ramfs_bin github.com/joushou/qptools/ramfs
-  - go build -o exportfs_bin github.com/joushou/qptools/exportfs
-  - go build -o cli_bin github.com/joushou/qptools/cli
+  - go build -o ramfs_bin github.com/joushou/qptools/cmd/ramfs
+  - go build -o exportfs_bin github.com/joushou/qptools/cmd/exportfs
+  - go build -o 9pc_bin github.com/joushou/qptools/cmd/9pc
