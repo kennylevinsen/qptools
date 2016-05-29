@@ -137,6 +137,9 @@ type FileServer struct {
 	// implement trees.Authenticator.
 	AuthFile trees.File
 
+	// The message size that the server will suggest.
+	SuggestedMessageSize uint32
+
 	// It is important that the locks below are only held during the immediate
 	// manipulation of the maps they are associated with. That also includes
 	// the read locks. Holding it for the full duration of a potentially
@@ -145,13 +148,14 @@ type FileServer struct {
 	fidLock   sync.RWMutex
 	tagLock   sync.Mutex
 	errorLock sync.Mutex
+	configLock sync.RWMutex
 
 	// internal state
 	error       error
 	errorCnt    uint32
-	MessageSize uint32
 	fids        map[qp.Fid]*fidState
 	tags        map[qp.Tag]*requestState
+	msgSize uint32
 
 	// Codecs
 	Encoder *qp.Encoder
@@ -269,7 +273,7 @@ func (fs *FileServer) respond(rs *requestState, m qp.Message) {
 			// error. We're supposed to cut the size down.
 
 			// Calc the size to chop the message up to.
-			max := int(fs.Encoder.MessageSize - qp.HeaderSize - 4)
+			max := int(fs.msgSize - qp.HeaderSize - 4)
 
 			switch {
 			case e.Error == ResponseTooBig || max < len(ResponseTooBig):
@@ -324,8 +328,8 @@ func (fs *FileServer) version(r *qp.VersionRequest, rs *requestState) {
 
 	versionstr := r.Version
 	msgsize := r.MessageSize
-	if msgsize > fs.MessageSize {
-		msgsize = fs.MessageSize
+	if msgsize > fs.SuggestedMessageSize {
+		msgsize = fs.SuggestedMessageSize
 	} else if msgsize < MinSize {
 		// This makes no sense. Error out.
 		fs.sendError(rs, MessageSizeTooSmall)
@@ -357,7 +361,10 @@ func (fs *FileServer) version(r *qp.VersionRequest, rs *requestState) {
 	// It is not of great importance, as sending other messages after or while
 	// sending a Tversion makes no sense, and this assignment is only
 	// problematic if we use the codecs *while* processing a Tversion request.
-	fs.MessageSize = msgsize
+	fs.configLock.Lock()
+	defer fs.configLock.Unlock()
+
+	fs.msgSize = msgsize
 	fs.Encoder.MessageSize = msgsize
 	fs.Decoder.MessageSize = msgsize
 
@@ -849,7 +856,9 @@ func (fs *FileServer) read(r *qp.ReadRequest, rs *requestState) {
 	}
 
 	// We try to cap things to the negotiated maxsize.
-	count := int(fs.Encoder.MessageSize) - qp.ReadOverhead
+	fs.configLock.RLock()
+	count := int(fs.msgSize) - qp.ReadOverhead
+	fs.configLock.RUnlock()
 	if count > int(r.Count) {
 		count = int(r.Count)
 	}
@@ -1105,7 +1114,7 @@ func New(rw io.ReadWriter, defaultRoot trees.File, roots map[string]trees.File) 
 		DefaultRoot: defaultRoot,
 		Roots:       roots,
 		Verbosity:   Quiet,
-		MessageSize: MessageSize,
+		SuggestedMessageSize: MessageSize,
 		tags:        make(map[qp.Tag]*requestState),
 	}
 
