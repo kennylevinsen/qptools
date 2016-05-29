@@ -39,7 +39,7 @@ func emptyStat() qp.Stat {
 // the most efficient way to use 9P, but allows using such servers with little
 // to no clue about what exactly 9P is.
 type SimpleClient struct {
-	c       Connection
+	c       *Client
 	msgsize uint32
 	root    Fid
 }

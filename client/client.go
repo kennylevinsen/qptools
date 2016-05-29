@@ -32,27 +32,27 @@ func toError(m qp.Message) error {
 	return nil
 }
 
-// Client allows for wrapped access to the low-level 9P primitives, but
-// without having to deal with concerns about actual serialization.
+// Client implements a high-level interface to 9P. It uses Transport internally
+// for serialization.
 type Client struct {
-	fids    map[qp.Fid]*ClientFid
-	fidLock sync.Mutex
-	client  *RawClient
-	nextFid qp.Fid
+	fids      map[qp.Fid]*ClientFid
+	fidLock   sync.Mutex
+	transport *Transport
+	nextFid   qp.Fid
 }
 
 // New returns an initialized Client.
 func New(rw io.ReadWriter) *Client {
-	c := NewRawClient(rw)
+	t := NewTransport(rw)
 	return &Client{
-		fids:   make(map[qp.Fid]*ClientFid),
-		client: c,
+		fids:      make(map[qp.Fid]*ClientFid),
+		transport: t,
 	}
 }
 
 // Serve runs the underlying client.
 func (dc *Client) Serve() error {
-	return dc.client.Serve()
+	return dc.transport.Serve()
 }
 
 // getFid allocates and returns a new Fid.
@@ -96,25 +96,25 @@ func (dc *Client) Stop() {
 		fid.Clunk()
 	}
 	dc.fids = nil
-	dc.client.Stop()
+	dc.transport.Stop()
 }
 
 // FlushAll flushes all current requests.
 func (dc *Client) FlushAll() {
-	tags := dc.client.PendingTags()
+	tags := dc.transport.PendingTags()
 	for _, t := range tags {
 		dc.Flush(t)
-		dc.client.Ditch(t)
+		dc.transport.Ditch(t)
 	}
 }
 
 // Flush sends Tflush.
 func (dc *Client) Flush(oldtag qp.Tag) error {
-	t, err := dc.client.Tag()
+	t, err := dc.transport.Tag()
 	if err != nil {
 		return err
 	}
-	_, err = dc.client.Send(&qp.FlushRequest{
+	_, err = dc.transport.Send(&qp.FlushRequest{
 		Tag:    t,
 		OldTag: oldtag,
 	})
@@ -122,9 +122,19 @@ func (dc *Client) Flush(oldtag qp.Tag) error {
 	return err
 }
 
-// Version sends Tversion.
+// Version initializes the connection with the provided protocol and message
+// size parameters. A successful version negotiation returns a final msgsize
+// lower or equal to the suggested msgsize, version string equal to the
+// suggested version string and no error. If the version string is "unknown",
+// the server is denying the protocol. A consequence of a successful protocol
+// negotiation is that any prior state on the protocol is cleared - that is, all
+// fids that may have been opened previously will implicitly be clunked.
 func (dc *Client) Version(msgsize uint32, version string) (uint32, string, error) {
-	resp, err := dc.client.Send(&qp.VersionRequest{
+	if err := dc.transport.TakeTag(qp.NOTAG); err != nil {
+		return 0, "", err
+	}
+
+	resp, err := dc.transport.Send(&qp.VersionRequest{
 		Tag:         qp.NOTAG,
 		MessageSize: msgsize,
 		Version:     qp.Version,
@@ -142,15 +152,18 @@ func (dc *Client) Version(msgsize uint32, version string) (uint32, string, error
 		return 0, "", ErrWeirdResponse
 	}
 
-	dc.client.SetMessageSize(msgsize)
-	dc.client.SetGreedyDecoding(true)
+	dc.transport.SetMessageSize(msgsize)
+	dc.transport.SetGreedyDecoding(true)
 
 	return vresp.MessageSize, vresp.Version, nil
 }
 
-// Auth sends Tauth.
+// Auth returns a fid and qid for the auth file of the requested user and
+// service. This fid can be used to execute an authentication protocol. When
+// done, use the fid as parameter to Attach. If no authentication is required,
+// an error will be returned.
 func (dc *Client) Auth(user, service string) (Fid, qp.Qid, error) {
-	t, err := dc.client.Tag()
+	t, err := dc.transport.Tag()
 	if err != nil {
 		return nil, qp.Qid{}, err
 	}
@@ -161,7 +174,7 @@ func (dc *Client) Auth(user, service string) (Fid, qp.Qid, error) {
 		return nil, qp.Qid{}, err
 	}
 
-	resp, err := dc.client.Send(&qp.AuthRequest{
+	resp, err := dc.transport.Send(&qp.AuthRequest{
 		Tag:      t,
 		AuthFid:  nfid.fid,
 		Username: user,
@@ -185,9 +198,11 @@ func (dc *Client) Auth(user, service string) (Fid, qp.Qid, error) {
 	return nfid, aresp.AuthQid, nil
 }
 
-// Attach sends Tattch.
+// Attach returns a fid and qid for the request user and service. If
+// authentication is required, provide the fid from the Auth message. Otherwise,
+// use a nil fid.
 func (dc *Client) Attach(authfid Fid, user, service string) (Fid, qp.Qid, error) {
-	t, err := dc.client.Tag()
+	t, err := dc.transport.Tag()
 	if err != nil {
 		return nil, qp.Qid{}, err
 	}
@@ -203,7 +218,7 @@ func (dc *Client) Attach(authfid Fid, user, service string) (Fid, qp.Qid, error)
 		afid = authfid.ID()
 	}
 
-	resp, err := dc.client.Send(&qp.AttachRequest{
+	resp, err := dc.transport.Send(&qp.AttachRequest{
 		Tag:      t,
 		Fid:      nfid.fid,
 		AuthFid:  afid,
@@ -242,12 +257,12 @@ func (f *ClientFid) ID() qp.Fid {
 
 // MessageSize returns the message size of the parent connections client.
 func (f *ClientFid) MessageSize() uint32 {
-	return f.parent.client.MessageSize()
+	return f.parent.transport.MessageSize()
 }
 
 // Walk sends Twalk.
 func (f *ClientFid) Walk(names []string) (Fid, []qp.Qid, error) {
-	t, err := f.parent.client.Tag()
+	t, err := f.parent.transport.Tag()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -258,7 +273,7 @@ func (f *ClientFid) Walk(names []string) (Fid, []qp.Qid, error) {
 		return nil, nil, err
 	}
 
-	resp, err := f.parent.client.Send(&qp.WalkRequest{
+	resp, err := f.parent.transport.Send(&qp.WalkRequest{
 		Tag:    t,
 		Fid:    f.fid,
 		NewFid: nfid.fid,
@@ -288,12 +303,12 @@ func (f *ClientFid) Walk(names []string) (Fid, []qp.Qid, error) {
 
 // Clunk sends Tclunk.
 func (f *ClientFid) Clunk() error {
-	t, err := f.parent.client.Tag()
+	t, err := f.parent.transport.Tag()
 	if err != nil {
 		return err
 	}
 
-	resp, err := f.parent.client.Send(&qp.ClunkRequest{
+	resp, err := f.parent.transport.Send(&qp.ClunkRequest{
 		Tag: t,
 		Fid: f.fid,
 	})
@@ -313,12 +328,12 @@ func (f *ClientFid) Clunk() error {
 
 // Remove sends Tremove.
 func (f *ClientFid) Remove() error {
-	t, err := f.parent.client.Tag()
+	t, err := f.parent.transport.Tag()
 	if err != nil {
 		return err
 	}
 
-	resp, err := f.parent.client.Send(&qp.RemoveRequest{
+	resp, err := f.parent.transport.Send(&qp.RemoveRequest{
 		Tag: t,
 		Fid: f.fid,
 	})
@@ -338,12 +353,12 @@ func (f *ClientFid) Remove() error {
 
 // Open sends Topen.
 func (f *ClientFid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
-	t, err := f.parent.client.Tag()
+	t, err := f.parent.transport.Tag()
 	if err != nil {
 		return qp.Qid{}, 0, err
 	}
 
-	resp, err := f.parent.client.Send(&qp.OpenRequest{
+	resp, err := f.parent.transport.Send(&qp.OpenRequest{
 		Tag:  t,
 		Fid:  f.fid,
 		Mode: mode,
@@ -366,12 +381,12 @@ func (f *ClientFid) Open(mode qp.OpenMode) (qp.Qid, uint32, error) {
 
 // Create sends Tcreate.
 func (f *ClientFid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.Qid, uint32, error) {
-	t, err := f.parent.client.Tag()
+	t, err := f.parent.transport.Tag()
 	if err != nil {
 		return qp.Qid{}, 0, err
 	}
 
-	resp, err := f.parent.client.Send(&qp.CreateRequest{
+	resp, err := f.parent.transport.Send(&qp.CreateRequest{
 		Tag:         t,
 		Fid:         f.fid,
 		Name:        name,
@@ -396,12 +411,12 @@ func (f *ClientFid) Create(name string, perm qp.FileMode, mode qp.OpenMode) (qp.
 
 // ReadOnce is the primitive API, and is directly equivalent to sending a Tread.
 func (f *ClientFid) ReadOnce(offset uint64, count uint32) ([]byte, error) {
-	t, err := f.parent.client.Tag()
+	t, err := f.parent.transport.Tag()
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := f.parent.client.Send(&qp.ReadRequest{
+	resp, err := f.parent.transport.Send(&qp.ReadRequest{
 		Tag:    t,
 		Fid:    f.fid,
 		Offset: offset,
@@ -424,12 +439,12 @@ func (f *ClientFid) ReadOnce(offset uint64, count uint32) ([]byte, error) {
 // WriteOnce is the primitive API, and is directly equivalent to sending a
 // Twrite.
 func (f *ClientFid) WriteOnce(offset uint64, data []byte) (uint32, error) {
-	t, err := f.parent.client.Tag()
+	t, err := f.parent.transport.Tag()
 	if err != nil {
 		return 0, err
 	}
 
-	resp, err := f.parent.client.Send(&qp.WriteRequest{
+	resp, err := f.parent.transport.Send(&qp.WriteRequest{
 		Tag:    t,
 		Fid:    f.fid,
 		Offset: offset,
@@ -452,12 +467,12 @@ func (f *ClientFid) WriteOnce(offset uint64, data []byte) (uint32, error) {
 
 // Stat sends Tstat.
 func (f *ClientFid) Stat() (qp.Stat, error) {
-	t, err := f.parent.client.Tag()
+	t, err := f.parent.transport.Tag()
 	if err != nil {
 		return qp.Stat{}, err
 	}
 
-	resp, err := f.parent.client.Send(&qp.StatRequest{
+	resp, err := f.parent.transport.Send(&qp.StatRequest{
 		Tag: t,
 		Fid: f.fid,
 	})
@@ -479,12 +494,12 @@ func (f *ClientFid) Stat() (qp.Stat, error) {
 
 // WriteStat sends Twstat.
 func (f *ClientFid) WriteStat(stat qp.Stat) error {
-	t, err := f.parent.client.Tag()
+	t, err := f.parent.transport.Tag()
 	if err != nil {
 		return err
 	}
 
-	resp, err := f.parent.client.Send(&qp.WriteStatRequest{
+	resp, err := f.parent.transport.Send(&qp.WriteStatRequest{
 		Tag:  t,
 		Fid:  f.fid,
 		Stat: stat,

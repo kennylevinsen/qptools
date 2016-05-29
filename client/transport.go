@@ -26,18 +26,22 @@ var (
 	// use.
 	ErrTagPoolDepleted = errors.New("tag pool depleted")
 
+	// ErrUnexpectedTagPoolDepleted indicates that all possible tags are
+	// currently in use, but that this should not have been the case.
+	ErrUnexpectedTagPoolDepleted = errors.New("unexpected tag pool depletion")
+
 	// ErrStopped indicate that the client was stopped.
 	ErrStopped = errors.New("stopped")
 )
 
-// RawClient implements a 9P client exposing a blocking rpc-like Send call,
+// Transport implements a 9P client exposing a blocking rpc-like Send call,
 // while still processing responses out-of-order. A blocking Send can be
 // unblocked by using Ditch.
 //
 // Apart from managing available tags, matching them on response and
 // encoding/decoding messages, RawClient does not concern itself with any
 // protocol details.
-type RawClient struct {
+type Transport struct {
 	encoder *qp.Encoder
 	decoder *qp.Decoder
 
@@ -49,15 +53,13 @@ type RawClient struct {
 	// queue stores a response channel per message tag.
 	queue     map[qp.Tag]chan qp.Message
 	queueLock sync.RWMutex
-
-	// nextTag is the next tag to allocate.
-	nextTag qp.Tag
+	nextTag   qp.Tag
 
 	// msgsize is the maximum set message size.
 	msgsize uint32
 }
 
-func (c *RawClient) die(err error) error {
+func (c *Transport) die(err error) error {
 	c.errorLock.Lock()
 	defer c.errorLock.Unlock()
 	if c.error == nil {
@@ -67,22 +69,8 @@ func (c *RawClient) die(err error) error {
 	return c.error
 }
 
-func (c *RawClient) setChannel(t qp.Tag) chan qp.Message {
-	c.queueLock.Lock()
-	defer c.queueLock.Unlock()
-
-	if _, exists := c.queue[t]; exists {
-		return nil
-	}
-
-	x := make(chan qp.Message, 1)
-	c.queue[t] = x
-
-	return x
-}
-
 // getChannel retrieves the response channel for a given tag.
-func (c *RawClient) getChannel(t qp.Tag) chan qp.Message {
+func (c *Transport) getChannel(t qp.Tag) chan qp.Message {
 	c.queueLock.RLock()
 	defer c.queueLock.RUnlock()
 
@@ -94,7 +82,7 @@ func (c *RawClient) getChannel(t qp.Tag) chan qp.Message {
 }
 
 // killChannel closes a response channel and removes it from the map.
-func (c *RawClient) killChannel(t qp.Tag) error {
+func (c *Transport) killChannel(t qp.Tag) error {
 	c.queueLock.Lock()
 	defer c.queueLock.Unlock()
 	ch, exists := c.queue[t]
@@ -108,7 +96,7 @@ func (c *RawClient) killChannel(t qp.Tag) error {
 }
 
 // received is the callback for messages decoded from the io.ReadWriter.
-func (c *RawClient) received(m qp.Message) error {
+func (c *Transport) received(m qp.Message) error {
 	c.queueLock.Lock()
 	defer c.queueLock.Unlock()
 	t := m.GetTag()
@@ -123,7 +111,7 @@ func (c *RawClient) received(m qp.Message) error {
 
 // Tag allocates and retrieves a tag. The tag MUST be used or ditched
 // afterwards, in order not to leak tags.
-func (c *RawClient) Tag() (qp.Tag, error) {
+func (c *Transport) Tag() (qp.Tag, error) {
 	c.queueLock.Lock()
 	defer c.queueLock.Unlock()
 
@@ -140,35 +128,44 @@ func (c *RawClient) Tag() (qp.Tag, error) {
 
 	// There is a tag available *somewhere*. Find it.
 	var t qp.Tag
-	exists := true
-	for i := 0; exists && i < 0xFFFF; i++ {
+	var exists bool
+	for i := 0; i < 0xFFFF; i++ {
 		t = c.nextTag
 		c.nextTag++
 		if c.nextTag == qp.NOTAG {
 			c.nextTag = 0
 		}
 
-		_, exists = c.queue[t]
+		if _, exists = c.queue[t]; exists {
+			c.queue[t] = make(chan qp.Message, 1)
+			return t, nil
+		}
+	}
+
+
+	return qp.NOTAG, ErrUnexpectedTagPoolDepleted
+}
+
+// TakeTag allocates a specific tag if available. The tag MUST be used or
+// ditched afterwards, in order not to leak tags.
+func (c *Transport) TakeTag(t qp.Tag) error {
+	c.queueLock.Lock()
+	defer c.queueLock.Unlock()
+
+	if _, exists := c.queue[t]; exists {
+		return ErrTagInUse
 	}
 
 	c.queue[t] = make(chan qp.Message, 1)
-
-	return t, nil
+	return nil
 }
 
 // Send sends a message and retrieves the response.
-func (c *RawClient) Send(m qp.Message) (qp.Message, error) {
+func (c *Transport) Send(m qp.Message) (qp.Message, error) {
 	t := m.GetTag()
 	ch := c.getChannel(t)
 	if ch == nil {
-		if t == qp.NOTAG {
-			ch = c.setChannel(qp.NOTAG)
-			if ch == nil {
-				return nil, ErrTagInUse
-			}
-		} else {
-			return nil, ErrNoSuchTag
-		}
+		return nil, ErrNoSuchTag
 	}
 
 	err := c.encoder.WriteMessage(m)
@@ -182,12 +179,12 @@ func (c *RawClient) Send(m qp.Message) (qp.Message, error) {
 // Ditch throws a pending request state away, and unblocks any Send on the tag.
 // It does not send Tflush, and should only be used after such a message has
 // been sent, or after a connection has been deemed dead.
-func (c *RawClient) Ditch(t qp.Tag) error {
+func (c *Transport) Ditch(t qp.Tag) error {
 	return c.killChannel(t)
 }
 
 // PendingTags return tags that are currently in use.
-func (c *RawClient) PendingTags() []qp.Tag {
+func (c *Transport) PendingTags() []qp.Tag {
 	c.queueLock.RLock()
 	defer c.queueLock.RUnlock()
 	var t []qp.Tag
@@ -202,7 +199,7 @@ func (c *RawClient) PendingTags() []qp.Tag {
 // not exchange any messages before the change has been complete, to ensure
 // proper de/encoding of messages. Calling this method while the Decoder is
 // decoding messages may results in a decoder error, terminating the run loop.
-func (c *RawClient) SetProtocol(p qp.Protocol) {
+func (c *Transport) SetProtocol(p qp.Protocol) {
 	// We take the writeLock to ensure that no one is trying to write
 	// messages.
 	c.encoder.Protocol = p
@@ -212,14 +209,14 @@ func (c *RawClient) SetProtocol(p qp.Protocol) {
 // SetReadWriter sets the io.ReadWriter used for message de/encoding. It is
 // safe assuming the safe conditions for SetProtocol are present and the
 // greedy decoding flag have not been enabled.
-func (c *RawClient) SetReadWriter(rw io.ReadWriter) {
+func (c *Transport) SetReadWriter(rw io.ReadWriter) {
 	c.encoder.Writer = rw
 	c.decoder.Reader = rw
 }
 
 // SetMessageSize sets the maximum message size. It does not reallocate the
 // decoding buffer.
-func (c *RawClient) SetMessageSize(ms uint32) {
+func (c *Transport) SetMessageSize(ms uint32) {
 	c.msgsize = ms
 	c.encoder.MessageSize = ms
 	c.decoder.MessageSize = ms
@@ -228,17 +225,17 @@ func (c *RawClient) SetMessageSize(ms uint32) {
 
 // SetGreedyDecoding sets the greedy flag for the decoder. When set, changing
 // the readwriter becomes unsafe.
-func (c *RawClient) SetGreedyDecoding(g bool) {
+func (c *Transport) SetGreedyDecoding(g bool) {
 	c.decoder.Greedy = g
 }
 
 // MessageSize returns the maximum message size.
-func (c *RawClient) MessageSize() uint32 {
+func (c *Transport) MessageSize() uint32 {
 	return c.msgsize
 }
 
 // Serve executes the response parsing loop.
-func (c *RawClient) Serve() error {
+func (c *Transport) Serve() error {
 	for atomic.LoadUint32(&c.errorCnt) == 0 {
 		m, err := c.decoder.ReadMessage()
 		if err != nil {
@@ -255,13 +252,13 @@ func (c *RawClient) Serve() error {
 }
 
 // Stop terminates the reading loop.
-func (c *RawClient) Stop() {
+func (c *Transport) Stop() {
 	c.die(nil)
 }
 
-// NewRawClient creates a new client.
-func NewRawClient(rw io.ReadWriter) *RawClient {
-	c := &RawClient{
+// NewTransport creates a new client.
+func NewTransport(rw io.ReadWriter) *Transport {
+	c := &Transport{
 		queue:   make(map[qp.Tag]chan qp.Message),
 		msgsize: 16384,
 	}

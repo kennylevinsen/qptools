@@ -2,37 +2,6 @@ package client
 
 import "github.com/joushou/qp"
 
-// Connection describes the operations that can be performed on a 9P
-// connection.
-type Connection interface {
-	// Version initializes the connection with the provided protocol and
-	// message size parameters. A successful version negotiation returns a
-	// final msgsize lower or equal to the suggested msgsize, version string
-	// equal to the suggested version string and no error. If the version
-	// string is "unknown", the server is denying the protocol. A consequence
-	// of a successful protocol negotiation is that any prior state on the
-	// protocol is cleared - that is, all fids that may have been opened
-	// previously will implicitly be clunked.
-	Version(msgsize uint32, version string) (uint32, string, error)
-
-	// Auth returns a fid and qid for the auth file of the requested user and
-	// service. This fid can be used to execute an authentication protocol.
-	// When done, use the fid as parameter to Attach. If no authentication is
-	// required, an error will be returned.
-	Auth(user, service string) (Fid, qp.Qid, error)
-
-	// Attach returns a fid and qid for the request user and service. If
-	// authentication is required, provide the fid from the Auth message.
-	// Otherwise, use a nil fid.
-	Attach(authfid Fid, user, service string) (Fid, qp.Qid, error)
-
-	// FlushAll flushes all current requests.
-	FlushAll()
-
-	// Stop stops the underlying clietn.
-	Stop()
-}
-
 // Fid descibes the actions that can be performed on a fid.
 type Fid interface {
 	// ID returns the integer ID that this Fid object represents.
