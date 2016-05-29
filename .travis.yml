@@ -14,3 +14,6 @@ script:
   - go build -o ramfs_bin github.com/joushou/qptools/cmd/ramfs
   - go build -o exportfs_bin github.com/joushou/qptools/cmd/exportfs
   - go build -o 9pc_bin github.com/joushou/qptools/cmd/9pc
+
+notifications:
+  email: false
