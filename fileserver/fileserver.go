@@ -1,7 +1,9 @@
 package fileserver
 
 import (
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"runtime/debug"
@@ -38,6 +40,7 @@ const (
 	ResponseTooBig         = "response too big"
 	MessageSizeTooSmall    = "version: message size too small"
 	IncorrectTagForVersion = "version: tag must be NOTAG"
+	MessagesDuringVersion  = "version: messages sent during version negotiation"
 	OpenWriteOnDir         = "open: cannot open dir for write"
 )
 
@@ -54,6 +57,10 @@ var (
 
 	// ErrHandlerPanic indicates that a handler panicked.
 	ErrHandlerPanic = errors.New("handler panicked")
+)
+
+var (
+	errMsgTooBig = errors.New("message too big")
 )
 
 const (
@@ -113,17 +120,13 @@ type requestState struct {
 // 2. FileServer responds to a request on a currently occupied tag with an
 // Rerror, but handles it internally as an implicit flush of the old request,
 // as the client would most likely not be able to map the response on this tag
-// to its request. There is, however, a small race in the current
-// implementation for this behaviour: When a tag collision is detected, an
-// error is created to send a response. If, however, the original request is
-// pending when the error is returned, but sends the response before the tag
-// collision error is sent, the tag collision error will be flushed instead.
-// Additional locking would seemingly be required to solve this issue, adding
-// unnecessary complexity in order to provide a better definition of a broken
-// request.
+// to its request.
 //
 // 3. FileServer permits explicit walks to ".".
 type FileServer struct {
+	// RW is the read writer for the fileserver.
+	RW io.ReadWriter
+
 	// Verbosity is the verbosity level.
 	Verbosity Verbosity
 
@@ -145,21 +148,21 @@ type FileServer struct {
 	// the read locks. Holding it for the full duration of a potentially
 	// blocking call such as read/write will lead to unwanted queuing of
 	// requests, including Flush and Clunk.
-	fidLock   sync.RWMutex
-	tagLock   sync.Mutex
-	errorLock sync.Mutex
+	fidLock    sync.RWMutex
+	tagLock    sync.Mutex
+	errorLock  sync.Mutex
 	configLock sync.RWMutex
 
 	// internal state
-	error       error
-	errorCnt    uint32
-	fids        map[qp.Fid]*fidState
-	tags        map[qp.Tag]*requestState
-	msgSize uint32
+	error    error
+	errorCnt uint32
+	fids     map[qp.Fid]*fidState
+	tags     map[qp.Tag]*requestState
+	msgSize  uint32
+	proto    qp.Protocol
 
 	// Codecs
-	Encoder *qp.Encoder
-	Decoder *qp.Decoder
+	decoder *qp.Decoder
 }
 
 // cleanup handles post-execution cleanup.
@@ -244,70 +247,90 @@ func (fs *FileServer) register(rs *requestState, cancelAndOverwrite bool) error 
 	return nil
 }
 
+// serialize serializes a message. It returns an error if serialization
+// failed, or if the message was too big to serialize based on the current
+// msgSize. The config lock is held during serialize.
+func (fs *FileServer) serialize(m qp.Message) ([]byte, []byte, error) {
+	var (
+		mt             qp.MessageType
+		msgbuf, header []byte
+		err            error
+	)
+
+	if mt, err = fs.proto.MessageType(m); err != nil {
+		return nil, nil, err
+	}
+
+	if msgbuf, err = m.MarshalBinary(); err != nil {
+		return nil, nil, err
+	}
+
+	if len(msgbuf)+qp.HeaderSize > int(fs.msgSize) {
+		return nil, nil, errMsgTooBig
+	}
+
+	header = make([]byte, qp.HeaderSize)
+	binary.LittleEndian.PutUint32(header[0:4], uint32(len(msgbuf)+qp.HeaderSize))
+	header[4] = byte(mt)
+
+	return header, msgbuf, nil
+}
+
+// writeMsg writes the header and message body to the connection.
+func (fs *FileServer) writeMsg(header, msgbuf []byte) error {
+	if _, err := fs.RW.Write(header); err != nil {
+		return err
+	}
+
+	if _, err := fs.RW.Write(msgbuf); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // respond sends a response if the tag is still queued. The tag is removed
 // immediately after checking its existence. It marks the fileserver as broken
 // on error by setting fs.dead to the error, which must break the server loop.
 func (fs *FileServer) respond(rs *requestState, m qp.Message) {
+	fs.configLock.RLock()
+	defer fs.configLock.RUnlock()
+
+	header, msgbuf, err := fs.serialize(m)
+	switch err {
+	case errMsgTooBig:
+		header, msgbuf, err = fs.serialize(&qp.ErrorResponse{
+			Tag:   rs.tag,
+			Error: ResponseTooBig,
+		})
+		if err != nil {
+			fs.die(ErrCouldNotSendErr)
+		}
+		return
+	default:
+		fs.die(err)
+		return
+	case nil:
+	}
+
 	// We cannot let go of the tag lock until the repsonse has been sent if
 	// applicable. Otherwise, we risk that the tag gets flushed between deciding
 	// that it is okay to send the response, and actually sending it.
+	// This lock is also used to serialize the write calls.
 	fs.tagLock.Lock()
-
 	if rs.cancelled {
 		fs.tagLock.Unlock()
 		return
 	}
 
 	fs.logresp(rs.tag, m)
-	err := fs.Encoder.WriteMessage(m)
+	err = fs.writeMsg(header, msgbuf)
 	delete(fs.tags, rs.tag)
 
 	fs.tagLock.Unlock()
 
-	switch err {
-	case qp.ErrMessageTooBig:
-		errmsg := ResponseTooBig
-
-		if e, ok := m.(*qp.ErrorResponse); ok {
-			// We do a bit of special handling if the failed message was an
-			// error. We're supposed to cut the size down.
-
-			// Calc the size to chop the message up to.
-			max := int(fs.msgSize - qp.HeaderSize - 4)
-
-			switch {
-			case e.Error == ResponseTooBig || max < len(ResponseTooBig):
-				// Okay, we're done for. We can't even say the message was too
-				// big.
-				fs.die(ErrCouldNotSendErr)
-				return
-			case len(e.Error) > max:
-				errmsg = e.Error[:max]
-			default:
-				// The message was actually okay, so the encoder must be
-				// confused.
-				fs.die(ErrEncMessageSizeMismatch)
-				return
-			}
-		}
-
-		if err = fs.register(rs, false); err != nil {
-			// BUG(kl): If a WriteMessage fails in FileServer.respond with
-			// qp.ErrMessageTooBig, and the client breaks protocol, sending an
-			// additional request on the same tag, we risk not being able to
-			// acquire the tag to write the error. In this case, the new request
-			// overwrites the old, and we simply dump the original response and
-			// its error message. More complicated locking could improve this
-			// behaviour, but the client broke the protocol completely, so we do
-			// not particularly care.
-			return
-		}
-		fs.sendError(rs, errmsg)
-		return
-	default:
+	if err != nil {
 		fs.die(err)
-	case nil:
-		return
 	}
 }
 
@@ -357,26 +380,28 @@ func (fs *FileServer) version(r *qp.VersionRequest, rs *requestState) {
 	fs.tagLock.Unlock()
 	fs.cleanup()
 
-	// BUG(kl): Race on msgsize in version handling that initializes the codecs.
-	// It is not of great importance, as sending other messages after or while
-	// sending a Tversion makes no sense, and this assignment is only
-	// problematic if we use the codecs *while* processing a Tversion request.
 	fs.configLock.Lock()
-	defer fs.configLock.Unlock()
 
+	fs.proto = proto
 	fs.msgSize = msgsize
-	fs.Encoder.MessageSize = msgsize
-	fs.Decoder.MessageSize = msgsize
 
-	// Modifying the Decoder protocol is safe, as the receiver loop is blocked.
-	// Modifying the Encoder protocol is safe as long as an older asynchronous
-	// request is not having its response written at the current time.
-	fs.Encoder.Protocol = proto
-	fs.Decoder.Protocol = proto
+	fs.decoder.Protocol = fs.proto
+	fs.decoder.Reader = fs.RW
+	fs.decoder.MessageSize = fs.msgSize
+	fs.decoder.Greedy = true
+
+	err := fs.decoder.Reset()
+	fs.configLock.Unlock()
+
+	if err != nil {
+		fs.die(fmt.Errorf("could not reset decoder: %v", err))
+		fs.sendError(rs, MessagesDuringVersion)
+		return
+	}
 
 	fs.respond(rs, &qp.VersionResponse{
 		Tag:         r.Tag,
-		MessageSize: msgsize,
+		MessageSize: fs.msgSize,
 		Version:     versionstr,
 	})
 }
@@ -1094,7 +1119,7 @@ func (fs *FileServer) received(m qp.Message) {
 // Serve starts the response parsing loop.
 func (fs *FileServer) Serve() error {
 	for atomic.LoadUint32(&fs.errorCnt) == 0 {
-		m, err := fs.Decoder.ReadMessage()
+		m, err := fs.decoder.ReadMessage()
 		if err != nil {
 			return fs.die(err)
 		}
@@ -1111,24 +1136,17 @@ func (fs *FileServer) Serve() error {
 // and there is no default set, attach will fail.
 func New(rw io.ReadWriter, defaultRoot trees.File, roots map[string]trees.File) *FileServer {
 	fs := &FileServer{
-		DefaultRoot: defaultRoot,
-		Roots:       roots,
-		Verbosity:   Quiet,
+		RW:                   rw,
+		DefaultRoot:          defaultRoot,
+		Roots:                roots,
+		Verbosity:            Quiet,
 		SuggestedMessageSize: MessageSize,
-		tags:        make(map[qp.Tag]*requestState),
-	}
-
-	fs.Encoder = &qp.Encoder{
-		Protocol:    qp.NineP2000,
-		Writer:      rw,
-		MessageSize: MessageSize,
-	}
-
-	fs.Decoder = &qp.Decoder{
-		Protocol:    qp.NineP2000,
-		Reader:      rw,
-		MessageSize: MessageSize,
-		Greedy:      true,
+		tags:                 make(map[qp.Tag]*requestState),
+		decoder: &qp.Decoder{
+			Protocol:    qp.NineP2000,
+			Reader:      rw,
+			MessageSize: MessageSize,
+		},
 	}
 
 	return fs
