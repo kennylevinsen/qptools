@@ -136,12 +136,11 @@ func (c *Transport) Tag() (qp.Tag, error) {
 			c.nextTag = 0
 		}
 
-		if _, exists = c.queue[t]; exists {
+		if _, exists = c.queue[t]; !exists {
 			c.queue[t] = make(chan qp.Message, 1)
 			return t, nil
 		}
 	}
-
 
 	return qp.NOTAG, ErrUnexpectedTagPoolDepleted
 }
