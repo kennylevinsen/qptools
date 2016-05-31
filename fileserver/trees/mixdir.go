@@ -90,9 +90,19 @@ func (mt *MixDir) IsDir() (bool, error) {
 	return true, nil
 }
 
-// CanRemove always returns false.
+// CanRemove returns true if both Top and Bottom return true.
 func (mt *MixDir) CanRemove() (bool, error) {
-	return false, nil
+	a, err1 := mt.Top.CanRemove()
+	if err1 != nil {
+		return false, err1
+	}
+
+	b, err2 := mt.Bottom.CanRemove()
+	if err2 != nil {
+		return false, err2
+	}
+
+	return a && b, nil
 }
 
 // Walk first tries to walk in Top, then in Bottom, returning results and
