@@ -12,11 +12,12 @@ import (
 // Lister interface. It also provides access logging for directories
 // implementing AccessLogger.
 type ListHandle struct {
-	sync.RWMutex
+	sync.Mutex
 
-	Dir    Lister
-	User   string
-	buffer []byte
+	Dir  Lister
+	User string
+
+	buffer [][]byte
 }
 
 func (h *ListHandle) update() error {
@@ -24,14 +25,16 @@ func (h *ListHandle) update() error {
 	if err != nil {
 		return err
 	}
-	bb := make([]byte, 0, len(s)*64)
+
+	var bb [][]byte
 	for _, i := range s {
 		b, err := i.MarshalBinary()
-		bb = append(bb, b...)
 		if err != nil {
 			return err
 		}
+		bb = append(bb, b)
 	}
+
 	h.buffer = bb
 	return nil
 }
@@ -51,18 +54,28 @@ func (h *ListHandle) ReadAt(p []byte, offset int64) (int, error) {
 		a.Accessed()
 	}
 
-	h.RLock()
-	defer h.RUnlock()
-	if offset > int64(len(h.buffer)) {
-		return 0, nil
+	h.Lock()
+	defer h.Unlock()
+	var copied int
+	for {
+		if len(h.buffer) == 0 {
+			break
+		}
+
+		b := h.buffer[0]
+
+		if copied+len(b) > len(p) {
+			if copied == 0 {
+				return 0, errors.New("read: message size too small: stat does not fit")
+			}
+			break
+		}
+		copy(p[copied:], b)
+		copied += len(b)
+		h.buffer = h.buffer[1:]
 	}
 
-	rlen := int64(len(p))
-	if rlen > int64(len(h.buffer))-offset {
-		rlen = int64(len(h.buffer)) - offset
-	}
-	copy(p, h.buffer[offset:rlen+offset])
-	return int(rlen), nil
+	return copied, nil
 }
 
 // WriteAt returns an error, as writing to a directory is not legal.
