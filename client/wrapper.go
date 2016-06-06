@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/joushou/qp"
+	"github.com/joushou/qptools/utils"
 )
 
 // WrappedFid provides implementations of various common I/O interfaces, using
@@ -73,6 +74,16 @@ func (wf *WrappedFid) ReadAll() ([]byte, error) {
 	}
 
 	return p, err
+}
+
+// Readdir reads a directory listing from the fid.
+func (wf *WrappedFid) Readdir() ([]qp.Stat, error) {
+	b, err := wf.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	return utils.Readdir(b)
 }
 
 // Write implements io.Writer.
