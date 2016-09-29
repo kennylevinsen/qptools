@@ -89,7 +89,7 @@ func readdir(b []byte) ([]qp.Stat, error) {
 	for len(b) > 0 {
 		x := qp.Stat{}
 		l := binary.LittleEndian.Uint16(b[0:2])
-		if err := x.UnmarshalBinary(b[0 : 2+l]); err != nil {
+		if err := x.Unmarshal(b[0 : 2+l]); err != nil {
 			return nil, err
 		}
 		b = b[2+l:]

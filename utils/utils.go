@@ -17,7 +17,9 @@ func Readdir(b []byte) ([]qp.Stat, error) {
 		}
 
 		var stat qp.Stat
-		stat.UnmarshalBinary(b[0 : 2+l])
+		if err := stat.Unmarshal(b[0 : 2+l]); err != nil {
+			return stats, err
+		}
 		b = b[2+l:]
 		stats = append(stats, stat)
 	}

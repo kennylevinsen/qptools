@@ -28,8 +28,8 @@ func (h *ListHandle) update() error {
 
 	var bb [][]byte
 	for _, i := range s {
-		b, err := i.MarshalBinary()
-		if err != nil {
+		b := make([]byte, i.EncodedSize())
+		if err := i.Marshal(b); err != nil {
 			return err
 		}
 		bb = append(bb, b)

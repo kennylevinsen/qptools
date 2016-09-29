@@ -622,7 +622,8 @@ func TestRead(t *testing.T) {
 	read(1024, 1024, 2, 1, nil, fs, dbg, t)
 
 	s1, _ := file1.Stat()
-	sb1, _ := s1.MarshalBinary()
+	sb1 := make([]byte, s1.EncodedSize())
+	s1.Marshal(sb1)
 
 	walk(nil, 3, 1, 1, fs, dbg, t)
 	open(qp.OREAD, 3, 1, fs, dbg, t)

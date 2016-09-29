@@ -250,43 +250,31 @@ func (fs *FileServer) register(rs *requestState, cancelAndOverwrite bool) error 
 // serialize serializes a message. It returns an error if serialization
 // failed, or if the message was too big to serialize based on the current
 // msgSize. The config lock is held during serialize.
-func (fs *FileServer) serialize(m qp.Message) ([]byte, []byte, error) {
+func (fs *FileServer) serialize(m qp.Message) ([]byte, error) {
 	var (
 		mt             qp.MessageType
-		msgbuf, header []byte
 		err            error
 	)
 
 	if mt, err = fs.proto.MessageType(m); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	if msgbuf, err = m.MarshalBinary(); err != nil {
-		return nil, nil, err
+	l := m.EncodedSize() + qp.HeaderSize
+	if l > int(fs.msgSize) {
+		return nil, errMsgTooBig
 	}
 
-	if len(msgbuf)+qp.HeaderSize > int(fs.msgSize) {
-		return nil, nil, errMsgTooBig
+	b := make([]byte, l)
+
+	if err = m.Marshal(b[qp.HeaderSize:]); err != nil {
+		return nil, err
 	}
 
-	header = make([]byte, qp.HeaderSize)
-	binary.LittleEndian.PutUint32(header[0:4], uint32(len(msgbuf)+qp.HeaderSize))
-	header[4] = byte(mt)
+	binary.LittleEndian.PutUint32(b[0:4], uint32(l))
+	b[4] = byte(mt)
 
-	return header, msgbuf, nil
-}
-
-// writeMsg writes the header and message body to the connection.
-func (fs *FileServer) writeMsg(header, msgbuf []byte) error {
-	if _, err := fs.RW.Write(header); err != nil {
-		return err
-	}
-
-	if _, err := fs.RW.Write(msgbuf); err != nil {
-		return err
-	}
-
-	return nil
+	return b, nil
 }
 
 // respond sends a response if the tag is still queued. The tag is removed
@@ -296,10 +284,10 @@ func (fs *FileServer) respond(rs *requestState, m qp.Message) {
 	fs.configLock.RLock()
 	defer fs.configLock.RUnlock()
 
-	header, msgbuf, err := fs.serialize(m)
+	msgbuf, err := fs.serialize(m)
 	switch err {
 	case errMsgTooBig:
-		header, msgbuf, err = fs.serialize(&qp.ErrorResponse{
+		msgbuf, err = fs.serialize(&qp.ErrorResponse{
 			Tag:   rs.tag,
 			Error: ResponseTooBig,
 		})
@@ -324,7 +312,7 @@ func (fs *FileServer) respond(rs *requestState, m qp.Message) {
 	}
 
 	fs.logresp(rs.tag, m)
-	err = fs.writeMsg(header, msgbuf)
+	_, err = fs.RW.Write(msgbuf)
 	delete(fs.tags, rs.tag)
 
 	fs.tagLock.Unlock()
