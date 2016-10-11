@@ -252,8 +252,8 @@ func (fs *FileServer) register(rs *requestState, cancelAndOverwrite bool) error 
 // msgSize. The config lock is held during serialize.
 func (fs *FileServer) serialize(m qp.Message) ([]byte, error) {
 	var (
-		mt             qp.MessageType
-		err            error
+		mt  qp.MessageType
+		err error
 	)
 
 	if mt, err = fs.proto.MessageType(m); err != nil {
@@ -863,7 +863,10 @@ func (fs *FileServer) read(r *qp.ReadRequest, rs *requestState) {
 		return
 	}
 
-	if (mode&3 != qp.OREAD) && (mode&3 != qp.ORDWR) {
+	switch mode & 3 {
+	case qp.OREAD, qp.ORDWR, qp.OEXEC:
+		// Permitted.
+	default:
 		fs.sendError(rs, NotOpenForRead)
 		return
 	}
@@ -910,7 +913,10 @@ func (fs *FileServer) write(r *qp.WriteRequest, rs *requestState) {
 		return
 	}
 
-	if (mode&3 != qp.OWRITE) && (mode&3 != qp.ORDWR) {
+	switch mode & 3 {
+	case qp.OWRITE, qp.ORDWR:
+		// Permitted.
+	default:
 		fs.sendError(rs, NotOpenForWrite)
 		return
 	}
