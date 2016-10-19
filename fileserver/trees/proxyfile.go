@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/joushou/qp"
 )
@@ -34,27 +36,93 @@ func openMode2Flag(fm qp.OpenMode) int {
 	return nfm
 }
 
+// proxyFileListHandle implements fast directory listing of a ProxyFile.
+type proxyFileListHandle struct {
+	sync.Mutex
+	Dir  *ProxyFile
+	list []os.FileInfo
+}
+
+// Close is a no-op.
+func (h *proxyFileListHandle) Close() error { return nil }
+
+// WriteAt on proxyFileListHandle returns an error.
+func (h *proxyFileListHandle) WriteAt(p []byte, offset int64) (int, error) {
+	return 0, errors.New("cannot write to directory")
+}
+
+// ReadAt handles serialization of directory listing on demand.
+func (h *proxyFileListHandle) ReadAt(p []byte, offset int64) (int, error) {
+	h.Lock()
+	defer h.Unlock()
+	if offset == 0 {
+		list, err := h.Dir.DirectList()
+		if err != nil {
+			return 0, err
+		}
+		h.list = list
+	}
+
+	var copied int
+	for {
+		if len(h.list) == 0 {
+			break
+		}
+
+		f := h.list[0]
+
+		tpf := &ProxyFile{
+			root:  h.Dir.root,
+			path:  f.Name(),
+			user:  h.Dir.user,
+			group: h.Dir.group,
+		}
+
+		s := tpf.stat(f)
+		b := make([]byte, s.EncodedSize())
+		if err := s.Marshal(b); err != nil {
+			return copied, err
+		}
+
+		if copied+len(b) > len(p) {
+			if copied == 0 {
+				return 0, errors.New("read: message size too small: stat does not fit")
+			}
+			break
+		}
+
+		copy(p[copied:], b)
+		copied += len(b)
+		h.list = h.list[1:]
+	}
+
+	return copied, nil
+}
+
 // ProxyFile provides access to a local filesystem. Permissions aren't
 // checked, but assumed enforced by the OS. All owners are reported as the
 // provided user and group, not read from the filesystem due to portability
 // issues.
 type ProxyFile struct {
-	sync.RWMutex
-	root    string
-	path    string
-	info    os.FileInfo
-	caching int
-	user    string
-	group   string
+	caching  int32
+	root     string
+	path     string
+	infoLock sync.RWMutex
+	info     os.FileInfo
+	user     string
+	group    string
 }
 
 // updateInfo updates the local file information, unless caching is currently
 // enabled.
 func (pf *ProxyFile) updateInfo() error {
-	if pf.caching > 0 {
+	if atomic.LoadInt32(&pf.caching) > 0 {
 		return nil
 	}
+
 	var err error
+	pf.infoLock.Lock()
+	defer pf.infoLock.Unlock()
 	pf.info, err = os.Stat(filepath.Join(pf.root, pf.path))
 	return err
 }
@@ -63,9 +131,9 @@ func (pf *ProxyFile) updateInfo() error {
 // information multiple times during a single call to ProxyFile for no reason.
 func (pf *ProxyFile) cache(t bool) {
 	if t {
-		pf.caching++
+		atomic.AddInt32(&pf.caching, 1)
 	} else {
-		pf.caching--
+		atomic.AddInt32(&pf.caching, -1)
 	}
 }
 
@@ -74,6 +142,9 @@ func (pf *ProxyFile) Qid() (qp.Qid, error) {
 	if err := pf.updateInfo(); err != nil {
 		return qp.Qid{}, err
 	}
+
+	pf.infoLock.RLock()
+	defer pf.infoLock.RUnlock()
 
 	var tp qp.QidType
 	if pf.info.IsDir() {
@@ -130,44 +201,49 @@ func (pf *ProxyFile) Stat() (qp.Stat, error) {
 	if err := pf.updateInfo(); err != nil {
 		return qp.Stat{}, err
 	}
-	pf.cache(true)
-	defer pf.cache(false)
-
-	var err error
-	st := qp.Stat{}
-
-	st.Qid, err = pf.Qid()
-	if err != nil {
-		return qp.Stat{}, err
-	}
-	st.Mode = qp.FileMode(pf.info.Mode() & 0777)
-	if pf.info.IsDir() {
-		st.Mode |= qp.DMDIR
-	}
-	st.Mtime = uint32(pf.info.ModTime().Unix())
-	st.Atime = st.Mtime
-	st.Length = uint64(pf.info.Size())
-	if pf.info.IsDir() {
-		st.Length = 0
-	}
-	st.Name = filepath.Base(pf.path)
-	st.UID = pf.user
-	st.GID = pf.group
-	st.MUID = pf.user
-	return st, nil
+	pf.infoLock.RLock()
+	defer pf.infoLock.RUnlock()
+	return pf.stat(pf.info), nil
 }
 
-// List implements File.
-func (pf *ProxyFile) List(_ string) ([]qp.Stat, error) {
-	if err := pf.updateInfo(); err != nil {
-		return nil, err
-	}
-	pf.cache(true)
-	defer pf.cache(false)
+// stat implements a faster qp.Stat generation mechanism.
+func (pf *ProxyFile) stat(info os.FileInfo) qp.Stat {
+	// Qid() inlined
+	chk := sha256.Sum224([]byte(filepath.Join(pf.root, pf.path)))
+	path := binary.LittleEndian.Uint64(chk[:8])
+	mtime := info.ModTime()
+	stMtime := uint32(mtime.Unix())
 
+	st := qp.Stat{
+		Qid: qp.Qid{
+			Path:    path,
+			Version: uint32(mtime.UnixNano() / 1000000),
+		},
+		Mode:   qp.FileMode(info.Mode() & 0777),
+		Mtime:  stMtime,
+		Atime:  stMtime,
+		Length: uint64(info.Size()),
+		Name:   filepath.Base(pf.path),
+		UID:    pf.user,
+		GID:    pf.group,
+		MUID:   pf.user,
+	}
+
+	if info.IsDir() {
+		st.Length = 0
+		st.Qid.Type |= qp.QTDIR
+		st.Mode |= qp.DMDIR
+	}
+
+	return st
+}
+
+// DirectList returns the []os.FileInfo for this directory, allowing
+// implementations of fast directory listing.
+func (pf *ProxyFile) DirectList() ([]os.FileInfo, error) {
 	isdir, err := pf.IsDir()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not inspect file: %v", err)
 	}
 	if !isdir {
 		return nil, errors.New("not a directory")
@@ -175,34 +251,16 @@ func (pf *ProxyFile) List(_ string) ([]qp.Stat, error) {
 
 	f, err := os.OpenFile(filepath.Join(pf.root, pf.path), openMode2Flag(qp.OREAD), 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not open directory for reading: %v", err)
 	}
 	defer f.Close()
 
 	dir, err := f.Readdir(-1)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not read directory listing: %v", err)
 	}
 
-	var s []qp.Stat
-	for _, f := range dir {
-		tpf := &ProxyFile{
-			path:  f.Name(),
-			info:  f,
-			user:  pf.user,
-			group: pf.group,
-		}
-
-		tpf.cache(true)
-		y, err := tpf.Stat()
-		if err != nil {
-			return nil, err
-		}
-		s = append(s, y)
-		tpf.cache(false)
-	}
-
-	return s, nil
+	return dir, err
 }
 
 // Open implements File.
@@ -219,9 +277,8 @@ func (pf *ProxyFile) Open(user string, mode qp.OpenMode) (ReadWriteAtCloser, err
 	}
 
 	if isdir {
-		return &ListHandle{
-			Dir:  pf,
-			User: user,
+		return &proxyFileListHandle{
+			Dir: pf,
 		}, nil
 	}
 
@@ -243,6 +300,8 @@ func (pf *ProxyFile) IsDir() (bool, error) {
 	if err := pf.updateInfo(); err != nil {
 		return false, err
 	}
+	pf.infoLock.RLock()
+	defer pf.infoLock.RUnlock()
 	return pf.info.IsDir(), nil
 }
 
