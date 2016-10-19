@@ -238,6 +238,42 @@ func (pf *ProxyFile) stat(info os.FileInfo) qp.Stat {
 	return st
 }
 
+// List implements Lister.
+func (pf *ProxyFile) List(_ string) ([]qp.Stat, error) {
+	isdir, err := pf.IsDir()
+	if err != nil {
+		return nil, fmt.Errorf("could not inspect file: %v", err)
+	}
+	if !isdir {
+		return nil, errors.New("not a directory")
+	}
+
+	f, err := os.OpenFile(filepath.Join(pf.root, pf.path), openMode2Flag(qp.OREAD), 0)
+	if err != nil {
+		return nil, fmt.Errorf("could not open directory for reading: %v", err)
+	}
+	defer f.Close()
+
+	dir, err := f.Readdir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("could not read directory listing: %v", err)
+	}
+
+	s := make([]qp.Stat, len(dir))
+	for idx, f := range dir {
+		tpf := &ProxyFile{
+			root:  pf.root,
+			path:  f.Name(),
+			user:  pf.user,
+			group: pf.group,
+		}
+
+		s[idx] = tpf.stat(f)
+	}
+
+	return s, nil
+}
+
 // DirectList returns the []os.FileInfo for this directory, allowing
 // implementations of fast directory listing.
 func (pf *ProxyFile) DirectList() ([]os.FileInfo, error) {
