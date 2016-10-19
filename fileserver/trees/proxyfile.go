@@ -79,20 +79,19 @@ func (h *proxyFileListHandle) ReadAt(p []byte, offset int64) (int, error) {
 		}
 
 		s := tpf.stat(f)
-		b := make([]byte, s.EncodedSize())
-		if err := s.Marshal(b); err != nil {
-			return copied, err
-		}
-
-		if copied+len(b) > len(p) {
+		l := s.EncodedSize()
+		if len(p)-copied < l {
 			if copied == 0 {
 				return 0, errors.New("read: message size too small: stat does not fit")
 			}
 			break
 		}
 
-		copy(p[copied:], b)
-		copied += len(b)
+		if err := s.Marshal(p[copied:]); err != nil {
+			return copied, err
+		}
+
+		copied += l
 		h.list = h.list[1:]
 	}
 

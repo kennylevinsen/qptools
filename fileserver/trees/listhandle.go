@@ -3,6 +3,8 @@ package trees
 import (
 	"errors"
 	"sync"
+
+	"github.com/joushou/qp"
 )
 
 // BUG(kl): ListHandle.ReadAt permits arbitrary seeking in the directory
@@ -17,7 +19,7 @@ type ListHandle struct {
 	Dir  Lister
 	User string
 
-	buffer [][]byte
+	list []qp.Stat
 }
 
 func (h *ListHandle) update() error {
@@ -26,16 +28,7 @@ func (h *ListHandle) update() error {
 		return err
 	}
 
-	var bb [][]byte
-	for _, i := range s {
-		b := make([]byte, i.EncodedSize())
-		if err := i.Marshal(b); err != nil {
-			return err
-		}
-		bb = append(bb, b)
-	}
-
-	h.buffer = bb
+	h.list = s
 	return nil
 }
 
@@ -58,21 +51,25 @@ func (h *ListHandle) ReadAt(p []byte, offset int64) (int, error) {
 	defer h.Unlock()
 	var copied int
 	for {
-		if len(h.buffer) == 0 {
+		if len(h.list) == 0 {
 			break
 		}
 
-		b := h.buffer[0]
-
-		if copied+len(b) > len(p) {
+		s := h.list[0]
+		l := s.EncodedSize()
+		if len(p)-copied < l {
 			if copied == 0 {
 				return 0, errors.New("read: message size too small: stat does not fit")
 			}
 			break
 		}
-		copy(p[copied:], b)
-		copied += len(b)
-		h.buffer = h.buffer[1:]
+
+		if err := s.Marshal(p[copied:]); err != nil {
+			return copied, err
+		}
+
+		copied += l
+		h.list = h.list[1:]
 	}
 
 	return copied, nil

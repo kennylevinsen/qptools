@@ -154,13 +154,15 @@ func (d *SyntheticDir) List(user string) ([]qp.Stat, error) {
 		return nil, ErrPermissionDenied
 	}
 
-	var s []qp.Stat
-	for _, i := range d.Tree {
-		y, err := i.Stat()
+	s := make([]qp.Stat, len(d.Tree))
+	idx := 0
+	for _, f := range d.Tree {
+		y, err := f.Stat()
 		if err != nil {
 			return nil, err
 		}
-		s = append(s, y)
+		s[idx] = y
+		idx++
 	}
 	return s, nil
 }
