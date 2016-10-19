@@ -9,7 +9,7 @@ import (
 
 // Readdir interprets a 9p2000 directory listing.
 func Readdir(b []byte) ([]qp.Stat, error) {
-	var stats []qp.Stat
+	stats := make([]qp.Stat, 0, len(b)/64)
 	for len(b) > 0 {
 		l := int(binary.LittleEndian.Uint16(b[0:2]))
 		if l+2 > len(b) {
