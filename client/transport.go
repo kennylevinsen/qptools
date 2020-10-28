@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 var (

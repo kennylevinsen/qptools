@@ -3,7 +3,7 @@ package client
 import (
 	"testing"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 func TestTagAllocation(t *testing.T) {

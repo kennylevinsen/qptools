@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 // SyntheticDir represents an in-memory directory. Create on this directory

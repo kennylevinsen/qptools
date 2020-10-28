@@ -1,6 +1,6 @@
 package trees
 
-import "github.com/joushou/qp"
+import "github.com/kennylevinsen/qp"
 
 // MixDir allows for access two two directories on top of eachother. Top takes
 // priority: Creation is done in the Top dir, and the MixTree identifies as

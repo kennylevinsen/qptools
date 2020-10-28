@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 func openMode2Flag(fm qp.OpenMode) int {

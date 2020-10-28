@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 // ErrTerminatedRead indicates that a read was terminated because the file was

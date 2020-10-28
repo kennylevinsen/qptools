@@ -10,8 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/joushou/qp"
-	"github.com/joushou/qptools/fileserver/trees"
+	"github.com/kennylevinsen/qp"
+	"github.com/kennylevinsen/qptools/fileserver/trees"
 )
 
 // These are the error strings used by the fileserver itself. Do note that the

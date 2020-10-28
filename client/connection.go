@@ -1,6 +1,6 @@
 package client
 
-import "github.com/joushou/qp"
+import "github.com/kennylevinsen/qp"
 
 // Fid descibes the actions that can be performed on a fid.
 type Fid interface {

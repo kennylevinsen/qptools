@@ -3,7 +3,7 @@ package trees
 import (
 	"sync"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 // LockedHandle is a handle wrapper for use by LockedFile.

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 // Readdir interprets a 9p2000 directory listing.

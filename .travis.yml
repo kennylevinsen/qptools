@@ -5,18 +5,18 @@ go:
   - tip
 
 install:
-  - go get github.com/joushou/qp
+  - go get github.com/kennylevinsen/qp
   - go get github.com/chzyer/readline
   - go get github.com/alecthomas/kingpin
   - test() { go test "${1}" -coverprofile=o.txt -covermode=atomic -race && (if [ -e o.txt ]; then cat o.txt >> coverage.txt; rm o.txt; fi; true)}
 
 script:
-  - test github.com/joushou/qptools/fileserver/trees
-  - test github.com/joushou/qptools/fileserver
-  - test github.com/joushou/qptools/client
-  - go build -o ramfs_bin github.com/joushou/qptools/cmd/ramfs
-  - go build -o exportfs_bin github.com/joushou/qptools/cmd/exportfs
-  - go build -o 9pc_bin github.com/joushou/qptools/cmd/9pc
+  - test github.com/kennylevinsen/qptools/fileserver/trees
+  - test github.com/kennylevinsen/qptools/fileserver
+  - test github.com/kennylevinsen/qptools/client
+  - go build -o ramfs_bin github.com/kennylevinsen/qptools/cmd/ramfs
+  - go build -o exportfs_bin github.com/kennylevinsen/qptools/cmd/exportfs
+  - go build -o 9pc_bin github.com/kennylevinsen/qptools/cmd/9pc
 
 notifications:
   email: false

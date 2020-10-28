@@ -8,7 +8,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 const (

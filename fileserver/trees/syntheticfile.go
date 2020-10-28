@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 // SyntheticHandle implements locked R/W access to a SyntheticFile's internal

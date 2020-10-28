@@ -3,8 +3,8 @@ package fileserver
 import (
 	"errors"
 
-	"github.com/joushou/qp"
-	"github.com/joushou/qptools/fileserver/trees"
+	"github.com/kennylevinsen/qp"
+	"github.com/kennylevinsen/qptools/fileserver/trees"
 )
 
 // FilePath is used to maintain the current position in a tree.

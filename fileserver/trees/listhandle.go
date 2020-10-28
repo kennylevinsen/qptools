@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/joushou/qp"
+	"github.com/kennylevinsen/qp"
 )
 
 // BUG(kl): ListHandle.ReadAt permits arbitrary seeking in the directory

@@ -5,8 +5,8 @@ import (
 	"io"
 	"sync/atomic"
 
-	"github.com/joushou/qp"
-	"github.com/joushou/qptools/utils"
+	"github.com/kennylevinsen/qp"
+	"github.com/kennylevinsen/qptools/utils"
 )
 
 // WrappedFid provides implementations of various common I/O interfaces, using

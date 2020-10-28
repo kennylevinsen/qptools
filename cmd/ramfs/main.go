@@ -6,8 +6,8 @@ import (
 	"net"
 	"os"
 
-	"github.com/joushou/qptools/fileserver"
-	"github.com/joushou/qptools/fileserver/trees"
+	"github.com/kennylevinsen/qptools/fileserver"
+	"github.com/kennylevinsen/qptools/fileserver/trees"
 
 	"net/http"
 	_ "net/http/pprof"

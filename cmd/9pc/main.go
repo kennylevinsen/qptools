@@ -12,8 +12,8 @@ import (
 
 	"github.com/alecthomas/kingpin"
 	"github.com/chzyer/readline"
-	"github.com/joushou/qp"
-	"github.com/joushou/qptools/client"
+	"github.com/kennylevinsen/qp"
+	"github.com/kennylevinsen/qptools/client"
 )
 
 var (

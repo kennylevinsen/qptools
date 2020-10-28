@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/joushou/qp"
-	"github.com/joushou/qptools/fileserver/trees"
+	"github.com/kennylevinsen/qp"
+	"github.com/kennylevinsen/qptools/fileserver/trees"
 )
 
 // This file contains test helpers.
